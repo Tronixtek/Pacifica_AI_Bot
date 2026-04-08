@@ -1,0 +1,68 @@
+services:
+  - type: web
+    runtime: node
+    name: pacifica-ai-bot-web
+    region: frankfurt
+    rootDir: .
+    buildCommand: npm install && npm run build:web
+    startCommand: npm --workspace @pacifica-hackathon/web run start -- --hostname 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    buildFilter:
+      paths:
+        - apps/web/**
+        - packages/shared/**
+        - package.json
+        - package-lock.json
+        - tsconfig.base.json
+        - render.yaml
+    envVars:
+      - key: NODE_VERSION
+        value: 22.0.0
+      - key: NEXT_PUBLIC_TRADER_API_URL
+        value: https://pacifica-ai-bot-trader.onrender.com
+
+  - type: web
+    runtime: python
+    name: pacifica-ai-bot-trader
+    region: frankfurt
+    rootDir: services/trader
+    buildCommand: pip install --upgrade pip && pip install .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /readyz
+    disk:
+      name: pacifica-trader-data
+      mountPath: /var/data/pacifica-trader
+      sizeGB: 10
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: APP_ENV
+        value: production
+      - key: FRONTEND_ORIGIN
+        value: https://pacifica-ai-bot-web.onrender.com
+      - key: BOT_MODE
+        value: testnet
+      - key: PACIFICA_NETWORK
+        value: testnet
+      - key: USE_SIMULATED_FEED
+        value: "false"
+      - key: PREFER_WEBSOCKET_FEED
+        value: "true"
+      - key: ENABLE_LIVE_TRADING
+        value: "false"
+      - key: PERSIST_RUNTIME_STATE
+        value: "true"
+      - key: AUDIT_LOG_PATH
+        value: /var/data/pacifica-trader/logs/audit.jsonl
+      - key: STATE_STORE_PATH
+        value: /var/data/pacifica-trader/state/runtime.sqlite3
+      - key: ML_DATASET_ROOT
+        value: /var/data/pacifica-trader/training
+      - key: ML_MODEL_ARTIFACT_PATH
+        value: /var/data/pacifica-trader/models/ml_signal_model.json
+      - key: PACIFICA_ACCOUNT_ADDRESS
+        sync: false
+      - key: PACIFICA_AGENT_PRIVATE_KEY
+        sync: false
+      - key: PACIFICA_API_CONFIG_KEY
+        sync: false

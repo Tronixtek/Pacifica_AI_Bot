@@ -1,0 +1,17 @@
+{
+  "name": "pacifica-price-action-bot",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace @pacifica-hackathon/web run dev",
+    "build:web": "npm --workspace @pacifica-hackathon/web run build"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=11.0.0"
+  }
+}
