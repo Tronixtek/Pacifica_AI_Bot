@@ -7,6 +7,7 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "node scripts/dev.js",
     "dev:web": "npm --workspace @pacifica-hackathon/web run dev",
     "build:web": "npm --workspace @pacifica-hackathon/web run build"
   },
