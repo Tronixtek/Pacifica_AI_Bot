@@ -41,6 +41,17 @@ If you create the trader service manually in Render instead of using the Bluepri
 
 That Python version matters here. If Render falls back to its default `Python 3.14.x`, the deploy may fail or break package compatibility for the trading dependencies.
 
+There is now also a root-level fallback path if you accidentally point the Render service at the repo root instead of `services/trader`:
+
+- Build Command: `pip install --upgrade pip && pip install -r requirements.txt`
+- Start Command: `uvicorn render_trader:app --host 0.0.0.0 --port $PORT`
+
+That fallback works because the repo root now includes:
+
+- [requirements.txt](C:/Users/PC/Desktop/pacifica_hakerthon/requirements.txt) forwarding to `services/trader/requirements.txt`
+- [render_trader.py](C:/Users/PC/Desktop/pacifica_hakerthon/render_trader.py) forwarding imports into `services/trader/app`
+- [`.python-version`](C:/Users/PC/Desktop/pacifica_hakerthon/.python-version) pinning Python `3.11.11`
+
 Before you enable signed testnet execution on Render, set these trader secrets in the Render dashboard:
 
 - `PACIFICA_ACCOUNT_ADDRESS`
