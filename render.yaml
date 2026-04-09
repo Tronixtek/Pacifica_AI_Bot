@@ -26,7 +26,7 @@ services:
     name: pacifica-ai-bot-trader
     region: frankfurt
     rootDir: services/trader
-    buildCommand: pip install --upgrade pip && pip install .
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /readyz
     disk:

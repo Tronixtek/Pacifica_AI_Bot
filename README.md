@@ -28,6 +28,18 @@ The Render blueprint is configured to:
 - run the trader from `services/trader`
 - attach a persistent disk to the trader at `/var/data/pacifica-trader`
 - keep the initial cloud deploy in safe testnet observation mode with `ENABLE_LIVE_TRADING=false`
+- install the trader backend from `services/trader/requirements.txt`, which also matches Render's default Python build expectation
+
+If you create the trader service manually in Render instead of using the Blueprint, use these settings:
+
+- Runtime: `Python`
+- Root Directory: `services/trader`
+- Build Command: `pip install --upgrade pip && pip install -r requirements.txt`
+- Start Command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- Health Check Path: `/readyz`
+- Environment Variable: `PYTHON_VERSION=3.11.11`
+
+That Python version matters here. If Render falls back to its default `Python 3.14.x`, the deploy may fail or break package compatibility for the trading dependencies.
 
 Before you enable signed testnet execution on Render, set these trader secrets in the Render dashboard:
 
