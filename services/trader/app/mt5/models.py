@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -8,12 +8,14 @@ from typing import Any
 @dataclass(slots=True)
 class MarketSpec:
     symbol: str
+    digits: int
     tickSize: float
-    lotSize: float
-    minOrderSizeUsd: float
-    maxOrderSizeUsd: float
-    maxLeverage: int
-    isolatedOnly: bool
+    tickValue: float
+    contractSize: float
+    volumeStep: float
+    volumeMin: float
+    volumeMax: float
+    fillingModes: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -24,7 +26,6 @@ class MarketQuote:
     bidPrice: float | None = None
     askPrice: float | None = None
     updatedAt: datetime | None = None
-    lastOrderId: int | None = None
 
     @property
     def spreadBps(self) -> float:
@@ -41,30 +42,28 @@ class RemoteAccountSnapshot:
     equityUsd: float
     availableMarginUsd: float
     balanceUsd: float
+    totalMarginUsedUsd: float
+    marginLevelPct: float | None
+    currency: str
+    leverage: int
+    tradeAllowed: bool
     openPositions: int
-    availableToWithdrawUsd: float | None = None
-    pendingBalanceUsd: float | None = None
-    totalMarginUsedUsd: float | None = None
-    crossMaintenanceMarginUsd: float | None = None
     openOrders: int = 0
-    stopOrders: int = 0
-    feeLevel: int | None = None
-    makerFeeRate: float | None = None
-    takerFeeRate: float | None = None
-    useLastTradedPriceForStops: bool | None = None
     updatedAt: datetime | None = None
 
 
 @dataclass(slots=True)
 class RemotePositionSnapshot:
+    ticket: int
     symbol: str
     side: str
     size: float
     entryPrice: float
+    stopLoss: float | None
+    takeProfit: float | None
     notionalUsd: float
-    marginUsd: float | None = None
-    fundingUsd: float | None = None
-    isolated: bool = False
+    swapUsd: float | None = None
+    profitUsd: float | None = None
     openedAt: datetime | None = None
     updatedAt: datetime | None = None
 
@@ -72,18 +71,14 @@ class RemotePositionSnapshot:
 @dataclass(slots=True)
 class RemoteOpenOrderSnapshot:
     orderId: int
-    clientOrderId: str | None
     symbol: str
     side: str
     orderType: str
     price: float
     stopPrice: float | None
-    initialAmount: float
-    filledAmount: float
-    cancelledAmount: float
-    remainingAmount: float
+    volume: float
+    volumeRemaining: float
     notionalUsd: float
-    reduceOnly: bool
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 
@@ -93,7 +88,6 @@ class RemoteTradingSnapshot:
     account: RemoteAccountSnapshot
     positions: list[RemotePositionSnapshot]
     openOrders: list[RemoteOpenOrderSnapshot]
-    lastOrderId: int | None = None
     syncedAt: datetime | None = None
 
 

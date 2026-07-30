@@ -15,7 +15,7 @@ from app.training.dataset_loader import LocalTrainingDatasetLoader
 if TYPE_CHECKING:
     from app.config import Settings
     from app.contracts import SignalBias
-    from app.pacifica.client import PacificaClient
+    from app.mt5.client import Mt5Client
 
 
 INTERVAL_MS = {
@@ -171,7 +171,7 @@ class _CapturedModelState:
 
 
 class MlSignalModel:
-    def __init__(self, settings: "Settings", client: "PacificaClient") -> None:
+    def __init__(self, settings: "Settings", client: "Mt5Client") -> None:
         self.settings = settings
         self.client = client
         self.datasetLoader = LocalTrainingDatasetLoader(settings)
@@ -258,7 +258,7 @@ class MlSignalModel:
             if len(closes) >= self.minimum_points:
                 close_history[symbol] = closes
 
-        trained = self.train_from_close_history(close_history, source="Pacifica REST candles")
+        trained = self.train_from_close_history(close_history, source="MT5 candles")
         if trained:
             self.lastTrainedAt = now
             self._save_artifact_with_notice()

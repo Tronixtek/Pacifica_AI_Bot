@@ -1,12 +1,10 @@
 import type {
-  AccountConfigurationSource,
-  AccountLinkResponse,
   DashboardSnapshot,
   DiagnosticProbe,
   DiagnosticsResponse,
   OperatorActionResponse,
   SignalPreviewResponse
-} from "@pacifica-hackathon/shared";
+} from "@vtfx-mt5-bot/shared";
 
 const DEFAULT_API_URL = process.env.NEXT_PUBLIC_TRADER_API_URL ?? "http://127.0.0.1:8011";
 
@@ -78,37 +76,6 @@ export async function topUpPaperAccount(amountUsd: number): Promise<OperatorActi
   return (await response.json()) as OperatorActionResponse;
 }
 
-export async function linkAccount(accountAddress: string): Promise<AccountLinkResponse> {
-  const response = await fetch(`${DEFAULT_API_URL}/api/operator/link-account`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ accountAddress })
-  });
-
-  if (!response.ok) {
-    throw new Error(`Account link request returned ${response.status}`);
-  }
-
-  return (await response.json()) as AccountLinkResponse;
-}
-
-export async function unlinkAccount(): Promise<AccountLinkResponse> {
-  const response = await fetch(`${DEFAULT_API_URL}/api/operator/unlink-account`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Account unlink request returned ${response.status}`);
-  }
-
-  return (await response.json()) as AccountLinkResponse;
-}
-
 export async function previewSignal(signalId: string): Promise<SignalPreviewResponse> {
   const response = await fetch(`${DEFAULT_API_URL}/api/operator/signals/${signalId}/preview`, {
     method: "POST",
@@ -168,7 +135,7 @@ function normalizeSnapshot(raw: unknown, fallback: DashboardSnapshot): Dashboard
       ...fallback.account,
       ...account,
       source:
-        account.source === "pacifica" || account.source === "paper"
+        account.source === "mt5" || account.source === "paper"
           ? account.source
           : fallback.account.source,
       pnlUsd:
@@ -184,16 +151,7 @@ function normalizeSnapshot(raw: unknown, fallback: DashboardSnapshot): Dashboard
             ? "Legacy snapshot PnL from the backend."
             : fallback.account.pnlLabel,
       openOrders: typeof account.openOrders === "number" ? account.openOrders : 0,
-      stopOrders: typeof account.stopOrders === "number" ? account.stopOrders : 0,
-      feeLevel: typeof account.feeLevel === "number" ? account.feeLevel : null,
-      makerFeeRate: typeof account.makerFeeRate === "number" ? account.makerFeeRate : null,
-      takerFeeRate: typeof account.takerFeeRate === "number" ? account.takerFeeRate : null,
-      useLastTradedPriceForStops:
-        typeof account.useLastTradedPriceForStops === "boolean"
-          ? account.useLastTradedPriceForStops
-          : null,
-      lastSyncedAt: typeof account.lastSyncedAt === "string" ? account.lastSyncedAt : null,
-      lastOrderId: typeof account.lastOrderId === "number" ? account.lastOrderId : null
+      lastSyncedAt: typeof account.lastSyncedAt === "string" ? account.lastSyncedAt : null
     },
     paperAccount: {
       ...fallback.paperAccount,
@@ -419,26 +377,17 @@ function normalizeDiagnostics(raw: unknown, fallback: DiagnosticsResponse): Diag
     config: {
       ...fallback.config,
       ...config,
-      accountConfigured:
-        typeof config.accountConfigured === "boolean"
-          ? config.accountConfigured
-          : fallback.config.accountConfigured,
-      effectiveAccountAddress:
-        typeof config.effectiveAccountAddress === "string"
-          ? config.effectiveAccountAddress
-          : fallback.config.effectiveAccountAddress,
-      accountConfigurationSource:
-        config.accountConfigurationSource === "env" || config.accountConfigurationSource === "session"
-          ? (config.accountConfigurationSource as AccountConfigurationSource)
-          : fallback.config.accountConfigurationSource,
-      agentKeyConfigured:
-        typeof config.agentKeyConfigured === "boolean"
-          ? config.agentKeyConfigured
-          : fallback.config.agentKeyConfigured,
-      apiConfigKeyConfigured:
-        typeof config.apiConfigKeyConfigured === "boolean"
-          ? config.apiConfigKeyConfigured
-          : fallback.config.apiConfigKeyConfigured,
+      mt5LoginConfigured:
+        typeof config.mt5LoginConfigured === "boolean"
+          ? config.mt5LoginConfigured
+          : fallback.config.mt5LoginConfigured,
+      mt5ServerConfigured:
+        typeof config.mt5ServerConfigured === "boolean"
+          ? config.mt5ServerConfigured
+          : fallback.config.mt5ServerConfigured,
+      mt5Connected:
+        typeof config.mt5Connected === "boolean" ? config.mt5Connected : fallback.config.mt5Connected,
+      mt5Server: typeof config.mt5Server === "string" ? config.mt5Server : fallback.config.mt5Server,
       symbols: asArray(config.symbols, fallback.config.symbols)
     },
     services: asArray(payload.services, fallback.services),
@@ -504,10 +453,9 @@ function buildFallbackData(): DashboardData {
       id: "config",
       label: "Configuration",
       status: "healthy",
-      message: "Fallback mode assumes a paper-trading testnet profile.",
+      message: "Fallback mode assumes a paper-trading profile.",
       details: {
         mode: "paper",
-        network: "testnet",
         liveTradingEnabled: false,
         useSimulatedFeed: true
       }
@@ -520,16 +468,14 @@ function buildFallbackData(): DashboardData {
       details: {
         fastapi: true,
         httpx: true,
-        websockets: true,
-        solders: true,
-        base58: true
+        MetaTrader5: true
       }
     },
     {
       id: "live_probe",
-      label: "Live Pacifica Probe",
+      label: "Live MT5 Probe",
       status: "degraded",
-      message: "Backend is offline, so public Pacifica connectivity could not be checked.",
+      message: "Backend is offline, so MT5 terminal connectivity could not be checked.",
       details: {}
     }
   ];
@@ -540,11 +486,10 @@ function buildFallbackData(): DashboardData {
       generatedAt: now,
       bot: {
         mode: "paper",
-        network: "testnet",
         status: "degraded",
         liveTradingEnabled: false,
-        builderCode: "PAC-BOT-01",
-        agentWalletConfigured: false
+        mt5Server: null,
+        mt5LoginConfigured: false
       },
       operator: {
         paused: false,
@@ -579,22 +524,16 @@ function buildFallbackData(): DashboardData {
         equityUsd: 10000,
         availableMarginUsd: 8300,
         balanceUsd: null,
-        availableToWithdrawUsd: null,
-        pendingBalanceUsd: null,
         totalMarginUsedUsd: null,
-        crossMaintenanceMarginUsd: null,
+        marginLevelPct: null,
+        currency: null,
+        leverage: null,
         pnlUsd: 0,
         pnlLabel: "Paper strategy PnL across open and closed trades.",
         openPositions: 0,
         openOrders: 0,
-        stopOrders: 0,
         maxDailyLossPct: 3,
-        feeLevel: null,
-        makerFeeRate: null,
-        takerFeeRate: null,
-        useLastTradedPriceForStops: null,
-        lastSyncedAt: null,
-        lastOrderId: null
+        lastSyncedAt: null
       },
       paperAccount: {
         startingEquityUsd: 10000,
@@ -606,49 +545,49 @@ function buildFallbackData(): DashboardData {
       },
       watchlist: [
         {
-          symbol: "BTC",
-          lastPrice: 89000,
-          movePctFromOpen: 0.82,
+          symbol: "EURUSD",
+          lastPrice: 1.085,
+          movePctFromOpen: 0.12,
           spreadBps: 1.4
         },
         {
-          symbol: "ETH",
-          lastPrice: 3200,
+          symbol: "XAUUSD",
+          lastPrice: 2350,
           movePctFromOpen: 0.45,
           spreadBps: 1.7
         },
         {
-          symbol: "SOL",
-          lastPrice: 180,
+          symbol: "BTCUSD",
+          lastPrice: 62000,
           movePctFromOpen: -0.11,
           spreadBps: 2.1
         }
       ],
       marketCharts: [
         {
-          symbol: "BTC",
-          candles: buildFallbackCandles(88750, 0.004)
+          symbol: "EURUSD",
+          candles: buildFallbackCandles(1.085, 0.0006)
         },
         {
-          symbol: "ETH",
-          candles: buildFallbackCandles(3180, 0.006)
+          symbol: "XAUUSD",
+          candles: buildFallbackCandles(2350, 0.004)
         },
         {
-          symbol: "SOL",
-          candles: buildFallbackCandles(181, -0.003)
+          symbol: "BTCUSD",
+          candles: buildFallbackCandles(62000, 0.006)
         }
       ],
       signals: [
         {
           id: "fallback-signal",
-          symbol: "BTC",
+          symbol: "EURUSD",
           setup: "breakout",
           bias: "long",
           confidence: 0.76,
-          entryPrice: 89000,
-          stopLoss: 88400,
-          takeProfit: 90080,
-          size: 0.02,
+          entryPrice: 1.085,
+          stopLoss: 1.0836,
+          takeProfit: 1.088,
+          size: 0.5,
           notionalUsd: 1780,
           status: "approved",
           reason: "Fallback preview signal while the trader service is unavailable.",
@@ -670,13 +609,13 @@ function buildFallbackData(): DashboardData {
         {
           id: "fallback-trade-1",
           kind: "paper_entry",
-          symbol: "BTC",
-          title: "BTC long opened",
+          symbol: "EURUSD",
+          title: "EURUSD long opened",
           message: "Fallback paper trade entry shown while the backend is offline.",
           level: "success",
           side: "long",
-          price: 89000,
-          size: 0.02,
+          price: 1.085,
+          size: 0.5,
           notionalUsd: 1780,
           pnlUsd: null,
           signalId: "fallback-signal",
@@ -686,13 +625,13 @@ function buildFallbackData(): DashboardData {
         {
           id: "fallback-trade-2",
           kind: "paper_exit",
-          symbol: "ETH",
-          title: "ETH short closed",
+          symbol: "XAUUSD",
+          title: "XAUUSD short closed",
           message: "Fallback trade history entry for the live cockpit preview.",
           level: "success",
           side: "short",
-          price: 3192,
-          size: 0.8,
+          price: 2348,
+          size: 0.2,
           notionalUsd: 2553.6,
           pnlUsd: 42.8,
           signalId: null,
@@ -705,7 +644,7 @@ function buildFallbackData(): DashboardData {
         summary: "Fallback ML summary: holdout precision passed the dashboard safety gate.",
         trainingSource: "fallback artifact",
         trainingSamples: 864,
-        trainingSymbols: ["BTC", "ETH", "SOL"],
+        trainingSymbols: ["EURUSD", "XAUUSD", "BTCUSD"],
         lastTrainedAt: new Date(Date.now() - 1000 * 60 * 42).toISOString(),
         validationSamples: 144,
         decisionSamples: 21,
@@ -775,15 +714,15 @@ function buildFallbackData(): DashboardData {
             book: "primary",
             executionMode: "contrarian",
             signalId: "fallback-signal",
-            symbol: "BTC",
+            symbol: "EURUSD",
             setup: "breakout",
             side: "long",
             confidence: 0.79,
-            entryPrice: 88940,
-            exitPrice: 89520,
-            stopLoss: 88540,
-            takeProfit: 89500,
-            size: 0.021,
+            entryPrice: 1.0894,
+            exitPrice: 1.0952,
+            stopLoss: 1.0854,
+            takeProfit: 1.095,
+            size: 0.5,
             notionalUsd: 1867.74,
             riskUsd: 8.4,
             pnlUsd: 121.8,
@@ -798,15 +737,15 @@ function buildFallbackData(): DashboardData {
             book: "comparison",
             executionMode: "normal",
             signalId: "fallback-signal",
-            symbol: "BTC",
+            symbol: "EURUSD",
             setup: "breakout",
             side: "short",
             confidence: 0.79,
-            entryPrice: 88940,
-            exitPrice: 89520,
-            stopLoss: 89500,
-            takeProfit: 88540,
-            size: 0.013,
+            entryPrice: 1.0894,
+            exitPrice: 1.0952,
+            stopLoss: 1.095,
+            takeProfit: 1.0854,
+            size: 0.3,
             notionalUsd: 1156.22,
             riskUsd: 7.28,
             pnlUsd: -75.4,
@@ -827,19 +766,13 @@ function buildFallbackData(): DashboardData {
       generatedAt: now,
       config: {
         mode: "paper",
-        network: "testnet",
-        restUrl: "https://test-api.pacifica.fi/api/v1",
-        websocketUrl: "wss://test-ws.pacifica.fi/ws",
         useSimulatedFeed: true,
-        preferWebsocketFeed: true,
         liveTradingEnabled: false,
-        accountConfigured: false,
-        effectiveAccountAddress: null,
-        accountConfigurationSource: null,
-        agentKeyConfigured: false,
-        apiConfigKeyConfigured: false,
-        builderCode: "PAC-BOT-01",
-        symbols: ["BTC", "ETH", "SOL"]
+        mt5LoginConfigured: false,
+        mt5ServerConfigured: false,
+        mt5Connected: false,
+        mt5Server: null,
+        symbols: ["EURUSD", "XAUUSD", "BTCUSD"]
       },
       services: [
         {

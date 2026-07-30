@@ -1,6 +1,6 @@
 "use client";
 
-import type { MarketChart, SignalBias, TradeActivity } from "@pacifica-hackathon/shared";
+import type { MarketChart, SignalBias, TradeActivity } from "@vtfx-mt5-bot/shared";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 const usd = new Intl.NumberFormat("en-US", {
@@ -439,12 +439,12 @@ function createLocalDatafeed(
       window.setTimeout(() => {
         onResolve({
           data_status: "streaming",
-          description: `${symbol} Pacifica feed`,
-          exchange: "Pacifica",
+          description: `${symbol} MT5 feed`,
+          exchange: "MT5",
           has_daily: true,
           has_intraday: true,
           has_weekly_and_monthly: false,
-          listed_exchange: "Pacifica",
+          listed_exchange: "MT5",
           minmov: 1,
           name: requestedSymbol,
           pricescale: calculatePriceScale(chartRef.current),
@@ -452,7 +452,7 @@ function createLocalDatafeed(
           supported_resolutions: SUPPORTED_RESOLUTIONS,
           ticker: localSymbol,
           timezone: "Etc/UTC",
-          type: "crypto",
+          type: "forex",
           volume_precision: 4
         });
       }, 0);
@@ -466,12 +466,12 @@ function createLocalDatafeed(
       window.setTimeout(() => {
         onResult([
           {
-            description: `${symbol} Pacifica feed`,
-            exchange: "Pacifica",
+            description: `${symbol} MT5 feed`,
+            exchange: "MT5",
             full_name: localSymbol,
             symbol: localSymbol,
             ticker: localSymbol,
-            type: "crypto"
+            type: "forex"
           }
         ]);
       }, 0);
@@ -701,16 +701,16 @@ function toUnixSeconds(value: string) {
 }
 
 function buildChartingLibrarySymbol(symbol: string) {
-  return `PACIFICA:${symbol.trim().toUpperCase()}`;
+  return `MT5:${symbol.trim().toUpperCase()}`;
 }
 
 function resolveTradingViewSymbol(symbol: string) {
   const normalized = symbol.trim().toUpperCase();
   const mapping: Record<string, string> = {
-    BTC: "BINANCE:BTCUSDT",
-    ETH: "BINANCE:ETHUSDT",
-    SOL: "BINANCE:SOLUSDT"
+    BTCUSD: "BINANCE:BTCUSDT",
+    ETHUSD: "BINANCE:ETHUSDT",
+    XAUUSD: "OANDA:XAUUSD"
   };
 
-  return mapping[normalized] ?? `BINANCE:${normalized}USDT`;
+  return mapping[normalized] ?? `OANDA:${normalized}`;
 }

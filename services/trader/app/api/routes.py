@@ -3,8 +3,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from app.contracts import (
-    AccountLinkRequest,
-    AccountLinkResponse,
     DashboardSnapshot,
     DiagnosticsResponse,
     HealthResponse,
@@ -78,16 +76,6 @@ async def top_up_paper_account(
     payload: PaperBalanceTopUpRequest,
 ) -> OperatorActionResponse:
     return get_engine(request).top_up_paper_account(payload.amountUsd)
-
-
-@router.post("/api/operator/link-account", response_model=AccountLinkResponse)
-async def link_account(request: Request, payload: AccountLinkRequest) -> AccountLinkResponse:
-    return get_engine(request).link_account(payload.accountAddress)
-
-
-@router.post("/api/operator/unlink-account", response_model=AccountLinkResponse)
-async def unlink_account(request: Request) -> AccountLinkResponse:
-    return get_engine(request).unlink_account()
 
 
 @router.post("/api/operator/signals/{signal_id}/preview", response_model=SignalPreviewResponse)

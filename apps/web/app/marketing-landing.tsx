@@ -1,8 +1,6 @@
 "use client";
 
 import type {
-  AccountConfigurationSource,
-  AccountLinkResponse,
   DashboardSnapshot,
   DiagnosticsResponse,
   LivePerformanceSummary,
@@ -11,21 +9,18 @@ import type {
   PaperPerformanceSummary,
   SignalPreviewResponse,
   StrategySignal
-} from "@pacifica-hackathon/shared";
+} from "@vtfx-mt5-bot/shared";
 import { startTransition, useDeferredValue, useEffect, useEffectEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { detectBrowserWallets, getConnectedWalletAddress, shortenWalletAddress, type DetectedWallet } from "../lib/browser-wallet";
 import {
-  linkAccount,
   pauseStrategy,
   previewSignal,
   resetPaperAccount,
   resumeStrategy,
   submitSmokeTestOrder,
   syncAccount,
-  topUpPaperAccount,
-  unlinkAccount
+  topUpPaperAccount
 } from "../lib/api";
 import { LiveMarketWorkspace } from "./live-market-workspace";
 
@@ -39,8 +34,8 @@ const FEATURE_COLUMNS = [
   {
     label: "START FAST",
     items: [
-      ["Wallet-ready setup", "Connect your Pacifica account and see your sync status immediately."],
-      ["Testnet-first launch", "Practice the full flow safely before you move anywhere near live capital."],
+      ["MT5-ready setup", "Point the bot at your MT5 terminal and see connection status immediately."],
+      ["Demo-first launch", "Practice the full flow safely on a demo account before you move anywhere near live capital."],
       ["Explainable signals", "Every setup tells you what the bot saw and why it wants to trade."]
     ]
   },
@@ -55,9 +50,9 @@ const FEATURE_COLUMNS = [
   {
     label: "STAY IN CONTROL",
     items: [
-      ["Order preview", "Inspect the exact payload before the bot sends anything to Pacifica."],
+      ["Order preview", "Inspect the exact payload before the bot sends anything to MT5."],
       ["Live cockpit", "Monitor account sync, trade ideas, positions, and recent activity in one place."],
-      ["Builder-ready", "Designed for Pacifica builder code attribution and agent-key workflows."]
+      ["MT5-native", "Built around the real MetaTrader 5 terminal connection, not a browser wallet."]
     ]
   }
 ] as const;
@@ -65,7 +60,7 @@ const FEATURE_COLUMNS = [
 const BENEFIT_CARDS = [
   {
     title: "Automate your trading",
-    copy: "Let the bot watch Pacifica markets all day, detect setups, and line up the next trade without emotional hesitation."
+    copy: "Let the bot watch MT5 markets all day, detect setups, and line up the next trade without emotional hesitation."
   },
   {
     title: "Keep full visibility",
@@ -73,13 +68,13 @@ const BENEFIT_CARDS = [
   },
   {
     title: "Go from demo to real",
-    copy: "Start on paper or testnet, refine the strategy, and only enable live execution when the checks are green."
+    copy: "Start on paper or demo, refine the strategy, and only enable live execution when the checks are green."
   }
 ] as const;
 
 const NAV_ITEMS = [
   ["Get Started", "onboarding"],
-  ["Why Pacifica Bot", "why"],
+  ["Why MT5 Bot", "why"],
   ["Features", "features"],
   ["Live Bot", "live"],
   ["Advanced", "advanced"]
@@ -98,21 +93,21 @@ const LAUNCH_OPTIONS = [
     description: "Learn the flow safely with simulated capital while the bot explains every setup."
   },
   {
-    id: "testnet",
-    label: "Testnet",
-    description: "Connect Pacifica testnet and validate syncing, previewing, and order flow with no real risk."
+    id: "demo",
+    label: "Demo",
+    description: "Connect an MT5 demo account and validate syncing, previewing, and order flow with no real risk."
   },
   {
     id: "live",
     label: "Live Later",
-    description: "Prepare for a real-money rollout only after account sync, agent keys, and safeguards are all green."
+    description: "Prepare for a real-money rollout only after the MT5 terminal connection and safeguards are all green."
   }
 ] as const;
 
-const ONBOARDING_STORAGE_KEY = "pacifica-bot-onboarding-v1";
+const ONBOARDING_STORAGE_KEY = "vtfx-mt5-bot-onboarding-v1";
 
 type ExperienceLevel = "beginner" | "intermediate" | "advanced";
-type LaunchPreference = "paper" | "testnet" | "live";
+type LaunchPreference = "paper" | "demo" | "live";
 
 interface OnboardingState {
   fullName: string;
@@ -120,9 +115,6 @@ interface OnboardingState {
   experience: ExperienceLevel | null;
   profileCreated: boolean;
   launchMode: LaunchPreference | null;
-  walletProvider: string | null;
-  walletAddress: string | null;
-  accountAddressInput: string;
   riskAccepted: boolean;
   builderAcknowledged: boolean;
 }
@@ -146,12 +138,13 @@ const DEFAULT_ONBOARDING_STATE: OnboardingState = {
   experience: null,
   profileCreated: false,
   launchMode: null,
-  walletProvider: null,
-  walletAddress: null,
-  accountAddressInput: "",
   riskAccepted: false,
   builderAcknowledged: false
 };
+
+function isMt5Configured(diagnostics: DiagnosticsResponse) {
+  return diagnostics.config.mt5LoginConfigured && diagnostics.config.mt5ServerConfigured;
+}
 
 export function MarketingLanding({
   snapshot,
@@ -171,17 +164,9 @@ export function MarketingLanding({
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [preview, setPreview] = useState<SignalPreviewResponse | null>(null);
   const [selectedChartSymbol, setSelectedChartSymbol] = useState(
-    snapshot.marketCharts[0]?.symbol ?? snapshot.watchlist[0]?.symbol ?? "BTC"
+    snapshot.marketCharts[0]?.symbol ?? snapshot.watchlist[0]?.symbol ?? "EURUSD"
   );
   const [onboarding, setOnboarding] = useState<OnboardingState>(DEFAULT_ONBOARDING_STATE);
-  const [detectedWallets, setDetectedWallets] = useState<DetectedWallet[]>([]);
-  const [autoLinkedAddress, setAutoLinkedAddress] = useState<string | null>(null);
-  const [linkedAccountAddressState, setLinkedAccountAddressState] = useState<string | null>(
-    diagnostics.config.effectiveAccountAddress
-  );
-  const [linkedAccountSourceState, setLinkedAccountSourceState] = useState<AccountConfigurationSource | null>(
-    diagnostics.config.accountConfigurationSource
-  );
   const [paperTopUpInput, setPaperTopUpInput] = useState("2500");
   const [hasHydrated, setHasHydrated] = useState(false);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
@@ -194,8 +179,6 @@ export function MarketingLanding({
   );
   const degradedProbes = diagnostics.probes.filter((probe) => probe.status === "degraded");
   const previewableSignal = filteredSignals[0] ?? visibleSignals[0] ?? null;
-  const linkedAccountAddress = linkedAccountAddressState;
-  const linkedAccountSource = linkedAccountSourceState;
   const onboardingStatus = buildOnboardingStatus(onboarding, diagnostics, snapshot, usingFallback);
   const nextAction = getNextAction(snapshot, diagnostics, usingFallback, previewableSignal, onboardingStatus);
   const setupSteps = buildSetupSteps(snapshot, diagnostics, usingFallback);
@@ -205,18 +188,18 @@ export function MarketingLanding({
   const activePerformanceSummary = getPrimaryPerformanceSummary(snapshot);
   const activePerformanceTrades = getPrimaryPerformanceClosedTrades(snapshot);
   const performanceEyebrow =
-    snapshot.bot.mode === "testnet"
-      ? "Testnet performance"
-      : snapshot.bot.mode === "mainnet"
+    snapshot.bot.mode === "demo"
+      ? "Demo performance"
+      : snapshot.bot.mode === "live"
         ? "Live performance"
         : "Paper performance";
   const performanceHeading = showingLivePerformance
     ? activePerformanceSummary.closedTrades > 0
-      ? `${snapshot.bot.mode === "testnet" ? "Testnet" : "Live"} performance is being tracked`
-      : `Waiting for the first closed ${snapshot.bot.mode === "testnet" ? "testnet" : "live"} trade`
+      ? `${snapshot.bot.mode === "demo" ? "Demo" : "Live"} performance is being tracked`
+      : `Waiting for the first closed ${snapshot.bot.mode === "demo" ? "demo" : "live"} trade`
     : snapshot.paperPerformance.currentModeSummary.closedTrades >= 12
       ? "Paper validation is building confidence"
-      : "Keep collecting paper samples before testnet";
+      : "Keep collecting paper samples before demo";
   const performanceDescription = showingLivePerformance
     ? snapshot.livePerformance?.trackingBasis ?? ""
     : snapshot.paperPerformance.comparisonMethod;
@@ -228,11 +211,6 @@ export function MarketingLanding({
   useEffect(() => {
     setOperatorState(snapshot.operator);
   }, [snapshot.operator]);
-
-  useEffect(() => {
-    setLinkedAccountAddressState(diagnostics.config.effectiveAccountAddress);
-    setLinkedAccountSourceState(diagnostics.config.accountConfigurationSource);
-  }, [diagnostics.config.effectiveAccountAddress, diagnostics.config.accountConfigurationSource]);
 
   useEffect(() => {
     if (snapshot.marketCharts.some((chart) => chart.symbol === selectedChartSymbol)) {
@@ -259,7 +237,7 @@ export function MarketingLanding({
             ? stored.experience
             : current.experience,
         launchMode:
-          stored.launchMode === "paper" || stored.launchMode === "testnet" || stored.launchMode === "live"
+          stored.launchMode === "paper" || stored.launchMode === "demo" || stored.launchMode === "live"
             ? stored.launchMode
             : current.launchMode
       }));
@@ -271,91 +249,6 @@ export function MarketingLanding({
   useEffect(() => {
     window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(onboarding));
   }, [onboarding]);
-
-  const refreshWallets = useEffectEvent(() => {
-    const wallets = detectBrowserWallets();
-    setDetectedWallets((current) => (sameWallets(current, wallets) ? current : wallets));
-
-    const connected = wallets.find((wallet) => getConnectedWalletAddress(wallet.adapter));
-    if (!connected) {
-      setOnboarding((current) =>
-        current.walletProvider === null && current.walletAddress === null
-          ? current
-          : {
-              ...current,
-              walletProvider: null,
-              walletAddress: null
-            }
-      );
-      return;
-    }
-
-    const connectedAddress = getConnectedWalletAddress(connected.adapter);
-    if (!connectedAddress) {
-      return;
-    }
-
-    setOnboarding((current) => {
-      const nextAccountInput = current.accountAddressInput || connectedAddress;
-      if (
-        current.walletProvider === connected.label &&
-        current.walletAddress === connectedAddress &&
-        current.accountAddressInput === nextAccountInput
-      ) {
-        return current;
-      }
-
-      return {
-        ...current,
-        walletProvider: connected.label,
-        walletAddress: connectedAddress,
-        accountAddressInput: nextAccountInput
-      };
-    });
-  });
-
-  useEffect(() => {
-    if (!linkedAccountAddress) {
-      return;
-    }
-    setOnboarding((current) =>
-      current.accountAddressInput
-        ? current
-        : {
-            ...current,
-            accountAddressInput: linkedAccountAddress
-          }
-    );
-  }, [linkedAccountAddress]);
-
-  useEffect(() => {
-    refreshWallets();
-    const handleFocus = () => refreshWallets();
-    window.addEventListener("focus", handleFocus);
-    return () => window.removeEventListener("focus", handleFocus);
-  }, []);
-
-  useEffect(() => {
-    const accountAddress = onboarding.accountAddressInput.trim();
-    if (
-      usingFallback ||
-      !onboarding.walletAddress ||
-      !!linkedAccountAddress ||
-      !looksLikeWalletAddress(accountAddress) ||
-      autoLinkedAddress === accountAddress
-    ) {
-      return;
-    }
-
-    setAutoLinkedAddress(accountAddress);
-    void attemptAutoLink(accountAddress);
-  }, [
-    onboarding.walletAddress,
-    onboarding.accountAddressInput,
-    linkedAccountAddress,
-    usingFallback,
-    autoLinkedAddress
-  ]);
 
   const refreshSnapshot = useEffectEvent(() => {
     startTransition(() => {
@@ -381,26 +274,6 @@ export function MarketingLanding({
       setActionTone(result.ok ? "positive" : "negative");
     }
   );
-
-  const applyAccountLinkResult = useEffectEvent((result: AccountLinkResponse) => {
-    setOperatorState(result.operator);
-    setLinkedAccountAddressState(result.linkedAccountAddress);
-    setLinkedAccountSourceState(result.accountConfigurationSource);
-    setActionMessage(result.message);
-    setActionTone(result.ok ? "positive" : "negative");
-  });
-
-  const attemptAutoLink = useEffectEvent(async (accountAddress: string) => {
-    try {
-      const result = await linkAccount(accountAddress);
-      applyAccountLinkResult(result);
-      if (result.ok) {
-        refreshSnapshot();
-      }
-    } catch {
-      // Keep the manual link action available if the automatic session link fails.
-    }
-  });
 
   const runAction = useEffectEvent(async (key: string, work: () => Promise<OperatorActionResponse>) => {
     setActionPending(key);
@@ -472,120 +345,12 @@ export function MarketingLanding({
     setActionTone("positive");
   });
 
-  const handleConnectWallet = useEffectEvent(async (wallet: DetectedWallet) => {
-    setActionPending(`connect:${wallet.id}`);
-    try {
-      const response = await wallet.adapter.connect();
-      const responseAddress =
-        typeof response === "object" &&
-        response !== null &&
-        "publicKey" in response &&
-        response.publicKey
-          ? response.publicKey.toString()
-          : null;
-      const address = responseAddress ?? getConnectedWalletAddress(wallet.adapter);
-
-      if (!address) {
-        throw new Error("Wallet connected, but no public address was returned.");
-      }
-
-      setOnboarding((current) => ({
-        ...current,
-        walletProvider: wallet.label,
-        walletAddress: address,
-        accountAddressInput: current.accountAddressInput || address
-      }));
-      let linkSucceeded = false;
-      try {
-        const linkResult = await linkAccount(address);
-        applyAccountLinkResult(linkResult);
-        linkSucceeded = linkResult.ok;
-        if (linkResult.ok) {
-          refreshSnapshot();
-        }
-      } catch {
-        linkSucceeded = false;
-      }
-
-      setActionMessage(
-        linkSucceeded
-          ? `${wallet.label} connected and Pacifica account linked.`
-          : `${wallet.label} connected. Link the Pacifica account to continue.`
-      );
-      setActionTone("positive");
-      refreshWallets();
-    } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : "Wallet connection failed.");
-      setActionTone("negative");
-    } finally {
-      setActionPending(null);
-    }
-  });
-
-  const handleDisconnectWallet = useEffectEvent(async () => {
-    const activeWallet = detectedWallets.find((wallet) => wallet.label === onboarding.walletProvider);
-    setActionPending("disconnect-wallet");
-    try {
-      if (activeWallet?.adapter.disconnect) {
-        await activeWallet.adapter.disconnect();
-      }
-      setOnboarding((current) => ({
-        ...current,
-        walletProvider: null,
-        walletAddress: null
-      }));
-      setActionMessage("Browser wallet disconnected.");
-      setActionTone("positive");
-      refreshWallets();
-    } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : "Wallet disconnect failed.");
-      setActionTone("negative");
-    } finally {
-      setActionPending(null);
-    }
-  });
-
-  const handleLinkAccount = useEffectEvent(async () => {
-    const accountAddress = onboarding.accountAddressInput.trim();
-    if (!looksLikeWalletAddress(accountAddress)) {
-      setActionMessage("Enter a valid Pacifica account address before linking it.");
-      setActionTone("negative");
-      return;
-    }
-
-    setActionPending("link-account");
-    try {
-      const result = await linkAccount(accountAddress);
-      applyAccountLinkResult(result);
-      refreshSnapshot();
-    } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : "Account link failed.");
-      setActionTone("negative");
-    } finally {
-      setActionPending(null);
-    }
-  });
-
-  const handleUnlinkAccount = useEffectEvent(async () => {
-    setActionPending("unlink-account");
-    try {
-      const result = await unlinkAccount();
-      applyAccountLinkResult(result);
-      refreshSnapshot();
-    } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : "Account unlink failed.");
-      setActionTone("negative");
-    } finally {
-      setActionPending(null);
-    }
-  });
-
   return (
     <main className="marketing-home">
       <header className="marketing-nav">
         <div className="page-shell nav-inner">
           <button className="brand-lockup" type="button" onClick={() => scrollToSection("top")}>
-            PACIFICA<span>BOT</span>
+            VTFX<span>BOT</span>
           </button>
 
           <nav className="nav-links" aria-label="Primary">
@@ -610,11 +375,11 @@ export function MarketingLanding({
       <section className="hero-band" id="top">
         <div className="page-shell hero-grid-v2">
           <div className="hero-copy-v2">
-            <p className="eyebrow hero-eyebrow">Pacifica-Native AI Trading Bot</p>
+            <p className="eyebrow hero-eyebrow">MT5-Native AI Trading Bot</p>
             <h1>The breakout trading bot built to look premium and trade with discipline.</h1>
             <p className="hero-subcopy">
-              A hackathon-ready Pacifica product that scans for breakouts and liquidity sweeps,
-              previews every order, and helps users move from safe testnet validation to real
+              An MT5-native product that scans for breakouts and liquidity sweeps,
+              previews every order, and helps users move from safe demo validation to real
               execution with confidence.
             </p>
 
@@ -630,7 +395,7 @@ export function MarketingLanding({
             <div className="hero-status-row">
               <StatusPill label={snapshot.bot.status} tone={snapshot.bot.status === "healthy" ? "positive" : "negative"} />
               <StatusPill label={operatorState.paused ? "Bot Paused" : "Bot Running"} tone={operatorState.paused ? "negative" : "positive"} />
-              <StatusPill label={snapshot.account.source === "pacifica" ? "Pacifica Synced" : "Paper Mode"} tone="neutral" />
+              <StatusPill label={snapshot.account.source === "mt5" ? "MT5 Synced" : "Paper Mode"} tone="neutral" />
               <StatusPill label={onboardingStatus.cockpitUnlocked ? "Setup Complete" : `${onboardingStatus.completedCount}/${onboardingStatus.totalCount} Ready`} tone="neutral" />
             </div>
 
@@ -644,9 +409,9 @@ export function MarketingLanding({
           </div>
 
           <div className="hero-stage">
-            <div className="stage-orb orb-btc">BTC</div>
-            <div className="stage-orb orb-eth">ETH</div>
-            <div className="stage-orb orb-sol">SOL</div>
+            <div className="stage-orb orb-btc">FX</div>
+            <div className="stage-orb orb-eth">XAU</div>
+            <div className="stage-orb orb-sol">BTC</div>
 
             <div className="desktop-shell">
               <div className="device-topbar">
@@ -656,8 +421,8 @@ export function MarketingLanding({
               </div>
               <div className="desktop-header">
                 <div>
-                  <strong>{snapshot.watchlist[0]?.symbol ?? "BTC"} / USD</strong>
-                  <p>{snapshot.bot.network} network</p>
+                  <strong>{snapshot.watchlist[0]?.symbol ?? "EURUSD"}</strong>
+                  <p>{snapshot.bot.mode} mode{snapshot.bot.mt5Server ? ` · ${snapshot.bot.mt5Server}` : ""}</p>
                 </div>
                 <span className="desktop-price">
                   {usd.format(snapshot.watchlist[0]?.lastPrice ?? 0)}
@@ -680,7 +445,7 @@ export function MarketingLanding({
             </div>
 
             <div className="phone-shell">
-              <p className="phone-label">PACIFICA BOT</p>
+              <p className="phone-label">VTFX BOT</p>
               <strong>{operatorState.paused ? "Paused" : "Active"}</strong>
               <div className="phone-stat">
                 <span>Equity</span>
@@ -706,7 +471,7 @@ export function MarketingLanding({
               <SectionCopy
                 eyebrow="Get started"
                 title="Create your bot workspace before the cockpit unlocks."
-                body="This is the missing product layer: users create their workspace, choose how they want to launch, confirm Pacifica access, and accept the guardrails before they start using the bot."
+                body="This is the missing product layer: users create their workspace, choose how they want to launch, confirm the MT5 connection, and accept the guardrails before they start using the bot."
               />
 
               <div className="journey-meter">
@@ -757,7 +522,7 @@ export function MarketingLanding({
                           email: event.target.value
                         }))
                       }
-                      placeholder="ada@pacificabot.app"
+                      placeholder="ada@vtfxbot.app"
                     />
                   </label>
                 </div>
@@ -801,99 +566,41 @@ export function MarketingLanding({
                     tone={onboardingStatus.accessReady ? "positive" : onboardingStatus.accessRequired ? "negative" : "neutral"}
                   />
                 </div>
-                <h3>Connect Pacifica access</h3>
+                <h3>MT5 connection</h3>
                 <p>
-                  Paper mode can be explored first, but testnet and live flows should only unlock once Pacifica access is confirmed. Agent keys are still needed later for signed execution.
+                  Paper mode can be explored first, but demo and live flows should only unlock once the backend has an
+                  MT5 login and server configured. This is server-side configuration only &mdash; there is nothing to
+                  enter here, since MT5 credentials are never handled in the browser.
                 </p>
-                <div className="wallet-detect-row">
-                  {detectedWallets.length === 0 ? (
-                    <p className="wallet-help">
-                      No supported browser wallet detected yet. Install Phantom, Solflare, or Backpack, or paste a Pacifica account address manually.
-                    </p>
-                  ) : (
-                    detectedWallets.map((wallet) => (
-                      <button
-                        key={wallet.id}
-                        className={`segment-button ${onboarding.walletProvider === wallet.label ? "active" : ""}`}
-                        type="button"
-                        onClick={() => void handleConnectWallet(wallet)}
-                        disabled={actionPending === `connect:${wallet.id}`}
-                      >
-                        {actionPending === `connect:${wallet.id}` ? `Connecting ${wallet.label}...` : `Connect ${wallet.label}`}
-                      </button>
-                    ))
-                  )}
-                </div>
-                <div className="wallet-summary">
-                  <SimpleRow label="Browser wallet" value={onboarding.walletProvider ?? "Not connected"} />
-                  <SimpleRow label="Wallet address" value={shortenWalletAddress(onboarding.walletAddress)} />
-                </div>
-                <label className="form-field">
-                  <span>Pacifica account address</span>
-                  <input
-                    value={onboarding.accountAddressInput}
-                    onChange={(event) =>
-                      setOnboarding((current) => ({
-                        ...current,
-                        accountAddressInput: event.target.value
-                      }))
-                    }
-                    placeholder="Paste a Pacifica account address or connect a wallet"
-                  />
-                </label>
                 <div className="sync-status-list">
-                  <SyncStatusRow label="Wallet connected" ready={Boolean(onboarding.walletAddress)} detail={shortenWalletAddress(onboarding.walletAddress)} />
                   <SyncStatusRow
-                    label="Pacifica account linked"
-                    ready={Boolean(linkedAccountAddress)}
-                    detail={
-                      linkedAccountAddress
-                        ? `${shortenWalletAddress(linkedAccountAddress)}${linkedAccountSource ? ` via ${linkedAccountSource}` : ""}`
-                        : "No linked account yet"
-                    }
+                    label="MT5 login configured"
+                    ready={diagnostics.config.mt5LoginConfigured}
+                    detail={diagnostics.config.mt5LoginConfigured ? "MT5_LOGIN is set on the backend." : "Set MT5_LOGIN in the backend environment."}
                   />
                   <SyncStatusRow
-                    label="Agent key ready"
-                    ready={diagnostics.config.agentKeyConfigured}
+                    label="MT5 server configured"
+                    ready={diagnostics.config.mt5ServerConfigured}
+                    detail={diagnostics.config.mt5Server ?? "Set MT5_SERVER in the backend environment."}
+                  />
+                  <SyncStatusRow
+                    label="MT5 terminal connected"
+                    ready={diagnostics.config.mt5Connected}
                     detail={
-                      diagnostics.config.agentKeyConfigured
-                        ? "Signed execution can be prepared from the backend."
-                        : "Needed for real signed orders, not for entering the cockpit."
+                      diagnostics.config.mt5Connected
+                        ? "The backend has an active connection to the MT5 terminal."
+                        : "Needed for real order execution, not for entering the cockpit."
                     }
                   />
                 </div>
                 <div className="side-actions">
-                  <button
-                    className="nav-ghost side-button secondary"
-                    type="button"
-                    onClick={() => void handleLinkAccount()}
-                    disabled={actionPending === "link-account"}
-                  >
-                    {actionPending === "link-account" ? "Linking..." : "Link Pacifica account"}
-                  </button>
                   <button
                     className="nav-cta side-button"
                     type="button"
                     onClick={() => void handleSync()}
                     disabled={!operatorState.canSyncAccount || actionPending === "sync"}
                   >
-                    {actionPending === "sync" ? "Syncing..." : "Sync Pacifica"}
-                  </button>
-                  <button
-                    className="small-link"
-                    type="button"
-                    onClick={() => void handleUnlinkAccount()}
-                    disabled={!linkedAccountAddress || actionPending === "unlink-account"}
-                  >
-                    {actionPending === "unlink-account" ? "Unlinking..." : "Unlink account"}
-                  </button>
-                  <button
-                    className="small-link"
-                    type="button"
-                    onClick={() => void handleDisconnectWallet()}
-                    disabled={!onboarding.walletAddress || actionPending === "disconnect-wallet"}
-                  >
-                    {actionPending === "disconnect-wallet" ? "Disconnecting..." : "Disconnect wallet"}
+                    {actionPending === "sync" ? "Syncing..." : "Sync MT5 Account"}
                   </button>
                 </div>
               </article>
@@ -931,7 +638,7 @@ export function MarketingLanding({
                   <StatusPill label={onboardingStatus.safeguardsReady ? "Ready" : "Required"} tone={onboardingStatus.safeguardsReady ? "positive" : "negative"} />
                 </div>
                 <h3>Accept the guardrails</h3>
-                <p>The bot should only unlock after the user has acknowledged risk controls and builder-program behavior.</p>
+                <p>The bot should only unlock after the user has acknowledged risk controls and execution behavior.</p>
                 <div className="consent-stack">
                   <button
                     className={`consent-row ${onboarding.riskAccepted ? "active" : ""}`}
@@ -961,8 +668,8 @@ export function MarketingLanding({
                   >
                     <span className={`check-mark ${onboarding.builderAcknowledged ? "ready" : "missing"}`} />
                     <div>
-                      <strong>I understand builder code and agent-key permissions.</strong>
-                      <p>The Pacifica flow should be explicit before the user lets automation touch any account.</p>
+                      <strong>I understand the contrarian execution and magic-number tagging.</strong>
+                      <p>The MT5 execution flow should be explicit before the user lets automation touch any account.</p>
                     </div>
                   </button>
                 </div>
@@ -977,7 +684,7 @@ export function MarketingLanding({
                   {onboardingStatus.cockpitUnlocked
                     ? "The user journey is now coherent: account first, setup second, live cockpit third."
                     : onboardingStatus.accessRequired && !onboardingStatus.accessReady
-                      ? "Pick testnet or live only after Pacifica access, agent keys, and sync are confirmed."
+                      ? "Pick demo or live only after the MT5 connection is confirmed."
                       : "Complete the remaining setup cards so the bot experience feels trustworthy and guided."}
                 </p>
               </div>
@@ -1003,8 +710,8 @@ export function MarketingLanding({
         <div className="page-shell">
           <SectionCopy
             eyebrow="Why this feels premium"
-            title="A premium crypto product feel, tailored to Pacifica."
-            body="We kept the polished crypto-SaaS energy you liked, but made it about your Pacifica trading bot, your workflow, and your users."
+            title="A premium trading product feel, tailored to MT5."
+            body="A polished trading-SaaS experience, built around your MT5 trading bot, your workflow, and your users."
             light
           />
 
@@ -1034,7 +741,7 @@ export function MarketingLanding({
           <div>
             <SectionCopy
               eyebrow="Automate your trading"
-              title="Trade Pacifica with structure, not emotion."
+              title="Trade MT5 with structure, not emotion."
               body="The bot watches the market, filters the noise, applies risk rules, and gives the user a clear action path before anything gets sent."
             />
 
@@ -1089,9 +796,9 @@ export function MarketingLanding({
           />
 
           <div className="trust-grid">
-            <TrustCard title="Start on testnet" copy="Validate the full flow without risking real money while the judges can still see real execution logic." />
+            <TrustCard title="Start on demo" copy="Validate the full flow without risking real money while still seeing real execution logic against an MT5 demo account." />
             <TrustCard title="Explain every trade" copy="Show why the bot wants to trade, what it plans to do, and how risk controls shape the final order." />
-            <TrustCard title="Stay Pacifica-native" copy="Builder-code support, Pacifica account sync, and agent-key signing keep the product aligned with the platform." />
+            <TrustCard title="Stay MT5-native" copy="Magic-number tagging, MT5 account sync, and terminal-based execution keep the product aligned with the platform." />
           </div>
         </div>
       </section>
@@ -1121,7 +828,7 @@ export function MarketingLanding({
                   <span className="eyebrow">Locked until setup is complete</span>
                   <h3>Finish onboarding to unlock previews and bot controls.</h3>
                   <p>
-                    Users should not land directly in a trading surface. Create the workspace first, choose the launch mode, and confirm the Pacifica permissions.
+                    Users should not land directly in a trading surface. Create the workspace first, choose the launch mode, and confirm the MT5 connection.
                   </p>
                 </div>
                 <button className="nav-cta side-button" type="button" onClick={() => scrollToSection("onboarding")}>
@@ -1229,7 +936,7 @@ export function MarketingLanding({
                 >
                   {actionPending === "sync" ? "Syncing..." : "Sync Account"}
                 </button>
-                {snapshot.bot.mode === "testnet" ? (
+                {snapshot.bot.mode === "demo" ? (
                   <button
                     className="nav-ghost side-button secondary"
                     type="button"
@@ -1256,7 +963,7 @@ export function MarketingLanding({
 
             <article className="side-card">
               <span className="eyebrow">Account summary</span>
-              <h3>{snapshot.account.source === "pacifica" ? "Pacifica account" : "Paper account"}</h3>
+              <h3>{snapshot.account.source === "mt5" ? "MT5 account" : "Paper account"}</h3>
               <div className="simple-row-stack">
                 <SimpleRow label="Equity" value={usd.format(snapshot.account.equityUsd)} />
                 <SimpleRow label="Available" value={usd.format(snapshot.account.availableMarginUsd)} />
@@ -1352,7 +1059,7 @@ export function MarketingLanding({
                       <EmptyState
                         message={
                           showingLivePerformance
-                            ? `Closed ${snapshot.bot.mode === "testnet" ? "testnet" : "live"} trades will appear here once the first full cycle finishes.`
+                            ? `Closed ${snapshot.bot.mode === "demo" ? "demo" : "live"} trades will appear here once the first full cycle finishes.`
                             : "Closed paper trades will appear here once the first full trade cycle finishes."
                         }
                       />
@@ -1412,7 +1119,7 @@ export function MarketingLanding({
         <details className="advanced-details">
           <summary>Advanced details</summary>
           <p className="advanced-copy">
-            Technical diagnostics, network settings, and lower-level bot state for demos and debugging.
+            Technical diagnostics, MT5 connection settings, and lower-level bot state for demos and debugging.
           </p>
 
           <div className="advanced-grid-v2">
@@ -1434,24 +1141,24 @@ export function MarketingLanding({
             </article>
 
             <article className="advanced-card">
-              <h3>Network</h3>
+              <h3>MT5 connection</h3>
               <div className="advanced-stack">
-                <SimpleRow label="REST URL" value={diagnostics.config.restUrl} />
-                <SimpleRow label="WebSocket URL" value={diagnostics.config.websocketUrl} />
-                <SimpleRow label="Feed mode" value={diagnostics.config.useSimulatedFeed ? "Simulated" : "Live Pacifica"} />
+                <SimpleRow label="MT5 server" value={diagnostics.config.mt5Server ?? "Not configured"} />
+                <SimpleRow label="MT5 connected" value={diagnostics.config.mt5Connected ? "Yes" : "No"} />
+                <SimpleRow label="Feed mode" value={diagnostics.config.useSimulatedFeed ? "Simulated" : "Live MT5"} />
                 <SimpleRow label="Live trading" value={diagnostics.config.liveTradingEnabled ? "Enabled" : "Disabled"} />
               </div>
             </article>
 
             <article className="advanced-card">
-              <h3>Mirrored Pacifica positions</h3>
+              <h3>Mirrored MT5 positions</h3>
               <div className="advanced-stack">
                 {snapshot.remotePositions.length === 0 ? (
-                  <EmptyState message="No mirrored Pacifica positions yet." />
+                  <EmptyState message="No mirrored MT5 positions yet." />
                 ) : (
                   snapshot.remotePositions.map((position) => (
                     <SimpleRow
-                      key={`${position.symbol}-${position.side}`}
+                      key={`${position.ticket}`}
                       label={`${position.symbol} ${position.side}`}
                       value={`${position.size} @ ${usd.format(position.entryPrice)}`}
                     />
@@ -1464,13 +1171,13 @@ export function MarketingLanding({
               <h3>Open orders</h3>
               <div className="advanced-stack">
                 {snapshot.openOrders.length === 0 ? (
-                  <EmptyState message="No open Pacifica orders right now." />
+                  <EmptyState message="No open MT5 orders right now." />
                 ) : (
                   snapshot.openOrders.map((order) => (
                     <SimpleRow
                       key={order.orderId}
                       label={`${order.symbol} ${order.side}`}
-                      value={`${order.remainingAmount} @ ${usd.format(order.price)}`}
+                      value={`${order.volumeRemaining} @ ${usd.format(order.price)}`}
                     />
                   ))
                 )}
@@ -1724,16 +1431,16 @@ function buildSetupSteps(snapshot: DashboardSnapshot, diagnostics: DiagnosticsRe
       ready: !usingFallback
     },
     {
-      label: "Pacifica account linked",
-      description: diagnostics.config.accountConfigured
-        ? `Your Pacifica account is linked${diagnostics.config.accountConfigurationSource ? ` via ${diagnostics.config.accountConfigurationSource}` : ""}.`
-        : "Connect a wallet or paste a Pacifica account address to unlock real account sync.",
-      ready: diagnostics.config.accountConfigured
+      label: "MT5 login/server configured",
+      description: isMt5Configured(diagnostics)
+        ? "MT5_LOGIN and MT5_SERVER are set on the backend."
+        : "Set MT5_LOGIN and MT5_SERVER in the backend environment to unlock real account sync.",
+      ready: isMt5Configured(diagnostics)
     },
     {
-      label: "Agent key ready",
-      description: diagnostics.config.agentKeyConfigured ? "The bot can prepare signed trading requests." : "Add an API agent key before live order flow.",
-      ready: diagnostics.config.agentKeyConfigured
+      label: "MT5 terminal connected",
+      description: diagnostics.config.mt5Connected ? "The backend can prepare and submit orders." : "Start and log into the MT5 terminal before live order flow.",
+      ready: diagnostics.config.mt5Connected
     },
     {
       label: "Bot scanning live markets",
@@ -1760,17 +1467,17 @@ function buildAttentionItems(
     });
   }
 
-  if (!diagnostics.config.accountConfigured) {
+  if (!isMt5Configured(diagnostics)) {
     items.push({
-      title: "No Pacifica account connected",
-      message: "Connect a wallet or link a Pacifica account address so the product can show real balances, positions, and orders."
+      title: "No MT5 account connected",
+      message: "Set MT5_LOGIN and MT5_SERVER on the backend so the product can show real balances, positions, and orders."
     });
   }
 
-  if (!diagnostics.config.agentKeyConfigured) {
+  if (!diagnostics.config.mt5Connected) {
     items.push({
-      title: "Agent key missing",
-      message: "An API agent key is needed before the bot can move from preview mode toward signed live execution."
+      title: "MT5 terminal not connected",
+      message: "The backend needs a live connection to the MT5 terminal before the bot can move from preview mode toward execution."
     });
   }
 
@@ -1784,28 +1491,28 @@ function buildAttentionItems(
   if (!onboardingStatus.launchModeReady) {
     items.push({
       title: "No launch mode selected",
-      message: "Let the user choose paper, testnet, or a live-later path instead of guessing for them."
+      message: "Let the user choose paper, demo, or a live-later path instead of guessing for them."
     });
   }
 
   if (onboardingStatus.accessRequired && !onboardingStatus.accessReady) {
     items.push({
-      title: "Pacifica access not ready",
-      message: "Testnet and live paths should stay locked until Pacifica sync and agent-key setup are complete."
+      title: "MT5 access not ready",
+      message: "Demo and live paths should stay locked until the MT5 connection and account sync are complete."
     });
   }
 
   if (showingLivePerformance) {
     if (activePerformanceSummary.closedTrades === 0) {
       items.push({
-        title: "No closed testnet trades yet",
-        message: "The bot is live on testnet, but the performance card needs at least one completed trade cycle before the win rate and PnL ledger become meaningful."
+        title: "No closed demo trades yet",
+        message: "The bot is live on demo, but the performance card needs at least one completed trade cycle before the win rate and PnL ledger become meaningful."
       });
     }
 
     if (activePerformanceSummary.maxDrawdownPct > 0.05) {
       items.push({
-        title: "Testnet drawdown is elevated",
+        title: "Demo drawdown is elevated",
         message: "Max drawdown has pushed past 5%, so keep the bot under observation before promoting this setup any further."
       });
     }
@@ -1813,7 +1520,7 @@ function buildAttentionItems(
     if (snapshot.paperPerformance.currentModeSummary.closedTrades < 12) {
       items.push({
         title: "Paper sample is still small",
-        message: "Keep the bot running until the paper ledger has at least a dozen closed trades before you judge testnet readiness."
+        message: "Keep the bot running until the paper ledger has at least a dozen closed trades before you judge demo readiness."
       });
     }
 
@@ -1830,7 +1537,7 @@ function buildAttentionItems(
     if (snapshot.paperPerformance.currentModeSummary.maxDrawdownPct > 0.05) {
       items.push({
         title: "Paper drawdown is still elevated",
-        message: "Max drawdown has pushed past 5%, which is too aggressive for a clean move into testnet."
+        message: "Max drawdown has pushed past 5%, which is too aggressive for a clean move into demo."
       });
     }
   }
@@ -1873,42 +1580,42 @@ function getNextAction(
   if (!onboardingStatus.launchModeReady) {
     return {
       title: "Choose how the user should launch",
-      description: "Paper mode is the safest first experience, while testnet and live should be explicitly selected."
+      description: "Paper mode is the safest first experience, while demo and live should be explicitly selected."
     };
   }
 
   if (!onboardingStatus.safeguardsReady) {
     return {
       title: "Accept the guardrails",
-      description: "Risk rules and builder-program permissions should be acknowledged before the cockpit unlocks."
+      description: "Risk rules and execution permissions should be acknowledged before the cockpit unlocks."
     };
   }
 
   if (onboardingStatus.accessRequired && !onboardingStatus.accessReady) {
     return {
-      title: "Finish Pacifica access setup",
-      description: "Testnet and live workflows should stay gated until a Pacifica account is linked."
+      title: "Finish MT5 connection setup",
+      description: "Demo and live workflows should stay gated until MT5_LOGIN and MT5_SERVER are configured."
     };
   }
 
   if (!onboardingStatus.executionReady) {
     return {
-      title: "Add an agent key when you are ready",
-      description: "The cockpit is available, but signed order submission should stay disabled until the backend has an API agent key."
+      title: "Connect the MT5 terminal when you are ready",
+      description: "The cockpit is available, but signed order submission should stay disabled until the backend has a live MT5 terminal connection."
     };
   }
 
-  if (!diagnostics.config.accountConfigured) {
+  if (!isMt5Configured(diagnostics)) {
     return {
-      title: "Link your Pacifica account",
+      title: "Configure your MT5 account",
       description: "That unlocks account sync, real balances, mirrored positions, and a more convincing product demo."
     };
   }
 
-  if (snapshot.account.source !== "pacifica") {
+  if (snapshot.account.source !== "mt5") {
     return {
       title: "Run your first account sync",
-      description: "Pull your Pacifica account into the app so the live cockpit shows real data."
+      description: "Pull your MT5 account into the app so the live cockpit shows real data."
     };
   }
 
@@ -1922,14 +1629,14 @@ function getNextAction(
   if (!showingLivePerformance && snapshot.paperPerformance.currentModeSummary.closedTrades < 12) {
     return {
       title: "Collect more paper trade samples",
-      description: "Let the bot close more paper trades so the win rate, average R, and drawdown numbers become trustworthy before testnet."
+      description: "Let the bot close more paper trades so the win rate, average R, and drawdown numbers become trustworthy before demo."
     };
   }
 
   if (showingLivePerformance && snapshot.livePerformance?.summary.closedTrades === 0) {
     return {
-      title: "Let the testnet trade finish a full cycle",
-      description: "The bot is already trading on testnet. Once a position closes, the performance card will start showing real closed-trade stats."
+      title: "Let the demo trade finish a full cycle",
+      description: "The bot is already trading on demo. Once a position closes, the performance card will start showing real closed-trade stats."
     };
   }
 
@@ -1992,10 +1699,10 @@ function buildOnboardingStatus(
   const profileReady = onboarding.profileCreated && isValidProfile(onboarding);
   const experienceReady = onboarding.experience !== null;
   const launchModeReady = onboarding.launchMode !== null;
-  const accessRequired = onboarding.launchMode === "testnet" || onboarding.launchMode === "live";
-  const pacificaConnected = diagnostics.config.accountConfigured || snapshot.account.source === "pacifica";
-  const accessReady = pacificaConnected && !usingFallback;
-  const executionReady = diagnostics.config.agentKeyConfigured;
+  const accessRequired = onboarding.launchMode === "demo" || onboarding.launchMode === "live";
+  const mt5Connected = isMt5Configured(diagnostics) || snapshot.account.source === "mt5";
+  const accessReady = mt5Connected && !usingFallback;
+  const executionReady = diagnostics.config.mt5Connected;
   const safeguardsReady = onboarding.riskAccepted && onboarding.builderAcknowledged;
   const accessStepReady = launchModeReady ? (accessRequired ? accessReady : true) : false;
   const totalCount = 4;
@@ -2022,23 +1729,4 @@ function buildOnboardingStatus(
 
 function isValidProfile(onboarding: OnboardingState) {
   return onboarding.fullName.trim().length >= 2 && /\S+@\S+\.\S+/.test(onboarding.email) && onboarding.experience !== null;
-}
-
-function looksLikeWalletAddress(value: string) {
-  const trimmed = value.trim();
-  if (trimmed.length < 32 || trimmed.length > 48) {
-    return false;
-  }
-  return /^[1-9A-HJ-NP-Za-km-z]+$/.test(trimmed);
-}
-
-function sameWallets(current: DetectedWallet[], next: DetectedWallet[]) {
-  if (current.length !== next.length) {
-    return false;
-  }
-
-  return current.every((wallet, index) => {
-    const candidate = next[index];
-    return candidate !== undefined && wallet.id === candidate.id && wallet.label === candidate.label;
-  });
 }

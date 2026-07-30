@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Pacifica Trader Service",
+    title="VTFX MT5 Trader Service",
     version="0.1.0",
     lifespan=lifespan,
 )

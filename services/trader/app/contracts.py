@@ -5,11 +5,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-BotMode = Literal["paper", "testnet", "mainnet"]
-NetworkMode = Literal["testnet", "mainnet"]
+BotMode = Literal["paper", "demo", "live"]
 SystemStatus = Literal["healthy", "degraded", "offline"]
-AccountSource = Literal["paper", "pacifica"]
-AccountConfigurationSource = Literal["env", "session"]
+AccountSource = Literal["paper", "mt5"]
 SignalSetup = Literal["breakout", "liquidity_sweep", "manual_test"]
 SignalBias = Literal["long", "short"]
 SignalStatus = Literal["candidate", "approved", "blocked", "executed"]
@@ -38,11 +36,10 @@ class ServiceHealth(BaseModel):
 
 class BotSnapshot(BaseModel):
     mode: BotMode
-    network: NetworkMode
     status: SystemStatus
     liveTradingEnabled: bool
-    builderCode: str | None
-    agentWalletConfigured: bool
+    mt5Server: str | None = None
+    mt5LoginConfigured: bool
 
 
 class OperatorSnapshot(BaseModel):
@@ -59,22 +56,16 @@ class AccountSnapshot(BaseModel):
     equityUsd: float
     availableMarginUsd: float
     balanceUsd: float | None = None
-    availableToWithdrawUsd: float | None = None
-    pendingBalanceUsd: float | None = None
     totalMarginUsedUsd: float | None = None
-    crossMaintenanceMarginUsd: float | None = None
+    marginLevelPct: float | None = None
+    currency: str | None = None
+    leverage: int | None = None
     pnlUsd: float
     pnlLabel: str
     openPositions: int
     openOrders: int
-    stopOrders: int
     maxDailyLossPct: float
-    feeLevel: int | None = None
-    makerFeeRate: float | None = None
-    takerFeeRate: float | None = None
-    useLastTradedPriceForStops: bool | None = None
     lastSyncedAt: datetime | None = None
-    lastOrderId: int | None = None
 
 
 class PaperAccountSnapshot(BaseModel):
@@ -143,32 +134,30 @@ class EnginePosition(BaseModel):
 
 
 class RemotePositionSnapshot(BaseModel):
+    ticket: int
     symbol: str
     side: SignalBias
     size: float
     entryPrice: float
+    stopLoss: float | None = None
+    takeProfit: float | None = None
     notionalUsd: float
-    marginUsd: float | None = None
-    fundingUsd: float | None = None
-    isolated: bool
+    swapUsd: float | None = None
+    profitUsd: float | None = None
     openedAt: datetime | None = None
     updatedAt: datetime | None = None
 
 
 class OpenOrderSnapshot(BaseModel):
     orderId: int
-    clientOrderId: str | None = None
     symbol: str
     side: OrderSide
     orderType: str
     price: float
     stopPrice: float | None = None
-    initialAmount: float
-    filledAmount: float
-    cancelledAmount: float
-    remainingAmount: float
+    volume: float
+    volumeRemaining: float
     notionalUsd: float
-    reduceOnly: bool
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 
@@ -343,7 +332,6 @@ class SignalPreviewResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: SystemStatus
     mode: BotMode
-    network: NetworkMode
     liveTradingEnabled: bool
     message: str
     checkedAt: datetime = Field(default_factory=datetime.utcnow)
@@ -351,18 +339,12 @@ class HealthResponse(BaseModel):
 
 class ConfigReadiness(BaseModel):
     mode: BotMode
-    network: NetworkMode
-    restUrl: str
-    websocketUrl: str
     useSimulatedFeed: bool
-    preferWebsocketFeed: bool
     liveTradingEnabled: bool
-    accountConfigured: bool
-    effectiveAccountAddress: str | None = None
-    accountConfigurationSource: AccountConfigurationSource | None = None
-    agentKeyConfigured: bool
-    apiConfigKeyConfigured: bool
-    builderCode: str | None
+    mt5LoginConfigured: bool
+    mt5ServerConfigured: bool
+    mt5Connected: bool
+    mt5Server: str | None = None
     symbols: list[str]
 
 
@@ -375,14 +357,10 @@ class DiagnosticProbe(BaseModel):
 
 
 class DiagnosticsResponse(BaseModel):
-  generatedAt: datetime
-  config: ConfigReadiness
-  services: list[ServiceHealth]
-  probes: list[DiagnosticProbe]
-
-
-class AccountLinkRequest(BaseModel):
-    accountAddress: str
+    generatedAt: datetime
+    config: ConfigReadiness
+    services: list[ServiceHealth]
+    probes: list[DiagnosticProbe]
 
 
 class PaperBalanceTopUpRequest(BaseModel):
@@ -391,12 +369,3 @@ class PaperBalanceTopUpRequest(BaseModel):
 
 class SmokeTestOrderRequest(BaseModel):
     symbol: str = Field(min_length=2, max_length=16)
-
-
-class AccountLinkResponse(BaseModel):
-    ok: bool
-    message: str
-    operator: OperatorSnapshot
-    linkedAccountAddress: str | None = None
-    accountConfigurationSource: AccountConfigurationSource | None = None
-    generatedAt: datetime = Field(default_factory=datetime.utcnow)

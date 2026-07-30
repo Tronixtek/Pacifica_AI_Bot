@@ -1,7 +1,6 @@
 "use client";
 
 import type {
-  AccountSnapshot,
   DashboardSnapshot,
   DiagnosticProbe,
   DiagnosticsResponse,
@@ -13,7 +12,7 @@ import type {
   ServiceHealth,
   SignalPreviewResponse,
   StrategySignal
-} from "@pacifica-hackathon/shared";
+} from "@vtfx-mt5-bot/shared";
 import { startTransition, useDeferredValue, useEffect, useEffectEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -27,10 +26,14 @@ const usd = new Intl.NumberFormat("en-US", {
 
 const SECTION_IDS = {
   health: "system-health",
-  pacifica: "pacifica-state",
+  mt5: "mt5-state",
   signals: "signal-queue",
   events: "recent-events"
 } as const;
+
+function isMt5Configured(diagnostics: DiagnosticsResponse) {
+  return diagnostics.config.mt5LoginConfigured && diagnostics.config.mt5ServerConfigured;
+}
 
 export function DashboardConsole({
   snapshot,
@@ -53,7 +56,6 @@ export function DashboardConsole({
   const [preview, setPreview] = useState<SignalPreviewResponse | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const healthyProbeCount = diagnostics.probes.filter((probe) => probe.status === "healthy").length;
-  const degradedProbeCount = diagnostics.probes.filter((probe) => probe.status === "degraded").length;
   const previewableSignal = snapshot.signals.find((signal) => signal.status !== "blocked") ?? null;
 
   useEffect(() => {
@@ -125,7 +127,7 @@ export function DashboardConsole({
 
   const filteredWatchlist = snapshot.watchlist.filter((market) => matchesQuery(deferredQuery, market.symbol));
   const filteredSignals = snapshot.signals.filter((signal) => matchesQuery(deferredQuery, signal.symbol, signal.setup, signal.bias, signal.reason));
-  const filteredRemotePositions = snapshot.remotePositions.filter((position) => matchesQuery(deferredQuery, position.symbol, position.side, position.isolated ? "isolated" : "cross"));
+  const filteredRemotePositions = snapshot.remotePositions.filter((position) => matchesQuery(deferredQuery, position.symbol, position.side));
   const filteredOpenOrders = snapshot.openOrders.filter((order) => matchesQuery(deferredQuery, order.symbol, order.side, order.orderType, String(order.orderId)));
   const filteredEnginePositions = snapshot.positions.filter((position) => matchesQuery(deferredQuery, position.symbol, position.side, position.riskState));
   const filteredEvents = snapshot.events.filter((event) => matchesQuery(deferredQuery, event.level, event.message));
@@ -144,10 +146,10 @@ export function DashboardConsole({
     <main className="page-shell">
       <section className="hero hero-friendly">
         <div className="hero-copy hero-copy-friendly">
-          <p className="eyebrow">Pacifica Trading Bot</p>
+          <p className="eyebrow">VTFX MT5 Trading Bot</p>
           <h1>Understand your bot at a glance.</h1>
           <p className="hero-text">
-            This project is an AI-assisted Pacifica trading bot. It watches live markets for
+            This project is an AI-assisted MT5 trading bot. It watches live markets for
             breakouts and liquidity sweeps, applies risk rules, and helps you review what it wants
             to trade before any live execution.
           </p>
@@ -156,7 +158,9 @@ export function DashboardConsole({
             <span className={`badge ${operatorState.paused ? "degraded" : "healthy"}`}>
               {operatorState.paused ? "bot paused" : "bot running"}
             </span>
-            <span className="mono">{snapshot.bot.mode.toUpperCase()} on {snapshot.bot.network}</span>
+            <span className="mono">
+              {snapshot.bot.mode.toUpperCase()} mode{snapshot.bot.mt5Server ? ` on ${snapshot.bot.mt5Server}` : ""}
+            </span>
             <span className="mono">
               {usingFallback ? "Backend is offline, showing fallback data" : "Backend is connected"}
             </span>
@@ -204,9 +208,9 @@ export function DashboardConsole({
             <span className="label">Simple Status</span>
             <div className="summary-list">
               <QuickFact label="Trading mode" value={snapshot.bot.liveTradingEnabled ? "Live-ready" : "Safe / paper mode"} />
-              <QuickFact label="Account view" value={snapshot.account.source === "pacifica" ? "Pacifica account synced" : "Paper account only"} />
+              <QuickFact label="Account view" value={snapshot.account.source === "mt5" ? "MT5 account synced" : "Paper account only"} />
               <QuickFact label="Signals ready" value={`${visibleSignals.length} tradable setup${visibleSignals.length === 1 ? "" : "s"}`} />
-              <QuickFact label="Pacifica readiness" value={`${healthyProbeCount}/${diagnostics.probes.length} checks healthy`} />
+              <QuickFact label="MT5 readiness" value={`${healthyProbeCount}/${diagnostics.probes.length} checks healthy`} />
             </div>
           </article>
         </div>
@@ -329,7 +333,7 @@ export function DashboardConsole({
             subtitle="The most important account numbers without the extra noise."
           />
           <div className="stack">
-            <AccountDetailRow label="Account type" value={snapshot.account.source === "pacifica" ? "Connected Pacifica account" : "Paper trading account"} />
+            <AccountDetailRow label="Account type" value={snapshot.account.source === "mt5" ? "Connected MT5 account" : "Paper trading account"} />
             <AccountDetailRow label="Balance" value={optionalUsd(snapshot.account.balanceUsd)} />
             <AccountDetailRow label="Available funds" value={usd.format(snapshot.account.availableMarginUsd)} />
             <AccountDetailRow label="Margin in use" value={optionalUsd(snapshot.account.totalMarginUsedUsd)} />
@@ -342,27 +346,27 @@ export function DashboardConsole({
         <article className="panel wide">
           <PanelHeading
             title="Positions and Orders"
-            subtitle="What is currently open on Pacifica and inside the bot."
+            subtitle="What is currently open on MT5 and inside the bot."
           />
           <div className="subpanel-grid">
             <div className="subpanel">
-              <SubpanelHeading title="Pacifica Positions" subtitle="Live positions mirrored from the exchange account." />
+              <SubpanelHeading title="MT5 Positions" subtitle="Live positions mirrored from the MT5 terminal." />
               <div className="stack">
                 {filteredRemotePositions.length === 0 ? (
-                  <EmptyState message="No Pacifica positions are open right now." />
+                  <EmptyState message="No MT5 positions are open right now." />
                 ) : (
                   filteredRemotePositions.map((position) => (
-                    <RemotePositionRow key={`${position.symbol}-${position.side}`} position={position} />
+                    <RemotePositionRow key={position.ticket} position={position} />
                   ))
                 )}
               </div>
             </div>
 
             <div className="subpanel">
-              <SubpanelHeading title="Open Orders" subtitle="Orders currently waiting on Pacifica." />
+              <SubpanelHeading title="Open Orders" subtitle="Pending orders currently waiting on MT5." />
               <div className="stack">
                 {filteredOpenOrders.length === 0 ? (
-                  <EmptyState message="No Pacifica open orders right now." />
+                  <EmptyState message="No MT5 open orders right now." />
                 ) : (
                   filteredOpenOrders.map((order) => <OrderRow key={order.orderId} order={order} />)
                 )}
@@ -388,7 +392,7 @@ export function DashboardConsole({
         <details className="panel wide advanced-panel" id={SECTION_IDS.health}>
           <summary className="advanced-summary">Advanced Details</summary>
           <p className="advanced-copy">
-            Use this section for debugging, demo prep, and lower-level Pacifica checks.
+            Use this section for debugging, demo prep, and lower-level MT5 checks.
           </p>
 
           <div className="controls-grid advanced-controls">
@@ -435,11 +439,10 @@ export function DashboardConsole({
             <div className="subpanel">
               <SubpanelHeading title="Setup Details" subtitle="Technical configuration checks." />
               <div className="stack">
-                <ReadinessRow label="Builder Code" value={diagnostics.config.builderCode ?? "Not set"} ready={Boolean(diagnostics.config.builderCode)} />
-                <ReadinessRow label="Account Address" value={diagnostics.config.accountConfigured ? "Configured" : "Missing"} ready={diagnostics.config.accountConfigured} />
-                <ReadinessRow label="Agent Key" value={diagnostics.config.agentKeyConfigured ? "Configured" : "Missing"} ready={diagnostics.config.agentKeyConfigured} />
-                <ReadinessRow label="API Config Key" value={diagnostics.config.apiConfigKeyConfigured ? "Configured" : "Optional / Missing"} ready={diagnostics.config.apiConfigKeyConfigured} optional />
-                <ReadinessRow label="Feed Mode" value={diagnostics.config.useSimulatedFeed ? "Simulated" : "Live Pacifica"} ready={!diagnostics.config.useSimulatedFeed} optional={diagnostics.config.useSimulatedFeed} />
+                <ReadinessRow label="MT5 Login" value={diagnostics.config.mt5LoginConfigured ? "Configured" : "Missing"} ready={diagnostics.config.mt5LoginConfigured} />
+                <ReadinessRow label="MT5 Server" value={diagnostics.config.mt5Server ?? "Missing"} ready={diagnostics.config.mt5ServerConfigured} />
+                <ReadinessRow label="MT5 Terminal" value={diagnostics.config.mt5Connected ? "Connected" : "Not connected"} ready={diagnostics.config.mt5Connected} />
+                <ReadinessRow label="Feed Mode" value={diagnostics.config.useSimulatedFeed ? "Simulated" : "Live MT5"} ready={!diagnostics.config.useSimulatedFeed} optional={diagnostics.config.useSimulatedFeed} />
                 <ReadinessRow label="Tracked Symbols" value={diagnostics.config.symbols.join(", ")} ready={diagnostics.config.symbols.length > 0} />
               </div>
             </div>
@@ -452,16 +455,6 @@ export function DashboardConsole({
                 ) : (
                   visibleProbes.map((probe) => <ProbeRow key={probe.id} probe={probe} />)
                 )}
-              </div>
-            </div>
-
-            <div className="subpanel">
-              <SubpanelHeading title="Network Details" subtitle="Where this dashboard is sourcing data from." />
-              <div className="stack">
-                <NetworkDetail label="REST URL" value={diagnostics.config.restUrl} />
-                <NetworkDetail label="WebSocket URL" value={diagnostics.config.websocketUrl} />
-                <NetworkDetail label="Feed Preference" value={diagnostics.config.preferWebsocketFeed ? "WebSocket first" : "REST only"} />
-                <NetworkDetail label="Live Trading" value={diagnostics.config.liveTradingEnabled ? "Enabled" : "Disabled"} />
               </div>
             </div>
 
@@ -610,17 +603,6 @@ function AccountDetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function NetworkDetail({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="list-row">
-      <div>
-        <strong>{label}</strong>
-        <p className="mono break-anywhere">{value}</p>
-      </div>
-    </div>
-  );
-}
-
 function ProbeRow({ probe }: { probe: DiagnosticProbe }) {
   const detailText = summarizeDetails(probe.details);
 
@@ -686,17 +668,15 @@ function RemotePositionRow({ position }: { position: RemotePositionSnapshot }) {
           <strong>
             {position.symbol} {position.side.toUpperCase()}
           </strong>
-          <p>
-            {position.isolated ? "Isolated margin" : "Cross margin"} | size {position.size}
-          </p>
+          <p>Ticket #{position.ticket} | size {position.size}</p>
         </div>
         <span className={`badge ${position.side === "long" ? "positive" : "negative"}`}>{position.side}</span>
       </div>
       <div className="signal-grid">
         <span>Entry {usd.format(position.entryPrice)}</span>
         <span>Notional {usd.format(position.notionalUsd)}</span>
-        <span>Margin {optionalUsd(position.marginUsd)}</span>
-        <span>Funding {optionalUsd(position.fundingUsd)}</span>
+        <span>Swap {optionalUsd(position.swapUsd)}</span>
+        <span>Floating PnL {optionalUsd(position.profitUsd)}</span>
       </div>
       <p className="note">Updated {formatNullableTimestamp(position.updatedAt)}</p>
     </div>
@@ -719,9 +699,8 @@ function OrderRow({ order }: { order: OpenOrderSnapshot }) {
       </div>
       <div className="signal-grid">
         <span>Price {usd.format(order.price)}</span>
-        <span>Remaining {order.remainingAmount}</span>
+        <span>Remaining {order.volumeRemaining}</span>
         <span>Notional {usd.format(order.notionalUsd)}</span>
-        <span>Reduce Only {order.reduceOnly ? "Yes" : "No"}</span>
       </div>
       <p className="note">
         Stop {order.stopPrice == null ? "n/a" : usd.format(order.stopPrice)} | Updated{" "}
@@ -804,32 +783,11 @@ function formatNullableTimestamp(value: string | null | undefined): string {
   return formatTimestamp(value);
 }
 
-function optionalUsd(value: number | null): string {
+function optionalUsd(value: number | null | undefined): string {
   if (value == null) {
     return "Not available";
   }
   return usd.format(value);
-}
-
-function optionalNumber(value: number | null): string {
-  if (value == null) {
-    return "Not available";
-  }
-  return String(value);
-}
-
-function formatRate(value: number | null): string {
-  if (value == null) {
-    return "Not available";
-  }
-  return `${(value * 100).toFixed(3)}%`;
-}
-
-function formatStopMode(value: AccountSnapshot["useLastTradedPriceForStops"]): string {
-  if (value == null) {
-    return "Not available";
-  }
-  return value ? "Last traded price" : "Mark / configured default";
 }
 
 function buildSetupSteps(
@@ -844,18 +802,18 @@ function buildSetupSteps(
       ready: !usingFallback
     },
     {
-      label: "Pacifica account configured",
-      description: diagnostics.config.accountConfigured ? "A Pacifica account address is available for syncing." : "Add your Pacifica account address to enable real account sync.",
-      ready: diagnostics.config.accountConfigured
+      label: "MT5 account configured",
+      description: isMt5Configured(diagnostics) ? "MT5_LOGIN and MT5_SERVER are set on the backend." : "Set MT5_LOGIN and MT5_SERVER on the backend to enable real account sync.",
+      ready: isMt5Configured(diagnostics)
     },
     {
-      label: "Agent key ready",
-      description: diagnostics.config.agentKeyConfigured ? "The bot can prepare signed requests with an API agent key." : "Add an API agent key before attempting live order flow.",
-      ready: diagnostics.config.agentKeyConfigured
+      label: "MT5 terminal connected",
+      description: diagnostics.config.mt5Connected ? "The backend can prepare and submit orders." : "Start and log into the MT5 terminal before attempting live order flow.",
+      ready: diagnostics.config.mt5Connected
     },
     {
       label: "Live market feed",
-      description: diagnostics.config.useSimulatedFeed ? "The bot is still using a simulated feed for safety." : "The bot is connected to live Pacifica market data.",
+      description: diagnostics.config.useSimulatedFeed ? "The bot is still using a simulated feed for safety." : "The bot is connected to live MT5 market data.",
       ready: !diagnostics.config.useSimulatedFeed,
       optional: diagnostics.config.useSimulatedFeed
     },
@@ -889,10 +847,10 @@ function buildAttentionItems(
     });
   }
 
-  if (!diagnostics.config.accountConfigured) {
+  if (!isMt5Configured(diagnostics)) {
     items.push({
-      title: "No Pacifica account configured",
-      message: "Add your account details if you want account sync, previews based on real specs, and later live execution."
+      title: "No MT5 account configured",
+      message: "Set MT5_LOGIN and MT5_SERVER if you want account sync, previews based on real specs, and later live execution."
     });
   }
 
@@ -927,16 +885,16 @@ function getNextAction({
     };
   }
 
-  if (!diagnostics.config.accountConfigured) {
+  if (!isMt5Configured(diagnostics)) {
     return {
-      title: "Add your Pacifica account",
-      description: "Configure your Pacifica account address first so the bot can sync balances, positions, and orders."
+      title: "Configure your MT5 account",
+      description: "Set MT5_LOGIN and MT5_SERVER first so the bot can sync balances, positions, and orders."
     };
   }
 
-  if (snapshot.account.source !== "pacifica" && snapshot.operator.canSyncAccount) {
+  if (snapshot.account.source !== "mt5" && snapshot.operator.canSyncAccount) {
     return {
-      title: "Sync your Pacifica account",
+      title: "Sync your MT5 account",
       description: "Pull in your real account state so the dashboard shows your live balances, positions, and orders."
     };
   }
@@ -966,8 +924,4 @@ function matchesQuery(query: string, ...parts: Array<string | number | null | un
     return true;
   }
   return parts.some((part) => String(part ?? "").toLowerCase().includes(query));
-}
-
-function scrollToSection(id: string): void {
-  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
 }

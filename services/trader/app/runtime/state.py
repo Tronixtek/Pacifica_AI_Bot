@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from math import sin
-from typing import Iterable, Literal
+from typing import Callable, Iterable, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -34,12 +34,12 @@ from app.contracts import (
     StrategySignal,
     TradeActivity,
 )
-from app.pacifica.models import (
+from app.mt5.models import (
     MarketQuote,
     MarketSpec,
-    RemoteAccountSnapshot as PacificaRemoteAccountSnapshot,
-    RemoteOpenOrderSnapshot as PacificaRemoteOpenOrderSnapshot,
-    RemotePositionSnapshot as PacificaRemotePositionSnapshot,
+    RemoteAccountSnapshot as Mt5RemoteAccountSnapshot,
+    RemoteOpenOrderSnapshot as Mt5RemoteOpenOrderSnapshot,
+    RemotePositionSnapshot as Mt5RemotePositionSnapshot,
     RemoteTradingSnapshot,
 )
 
@@ -60,10 +60,13 @@ class SymbolState:
     spreadBps: float
     bidPrice: float | None = None
     askPrice: float | None = None
+    digits: int | None = None
     tickSize: float | None = None
-    lotSize: float | None = None
-    minOrderSizeUsd: float | None = None
-    maxLeverage: int | None = None
+    tickValue: float | None = None
+    contractSize: float | None = None
+    volumeStep: float | None = None
+    volumeMin: float | None = None
+    volumeMax: float | None = None
     updatedAt: datetime | None = None
     priceHistory: deque[float] = field(default_factory=lambda: deque(maxlen=PRICE_HISTORY_WINDOW))
     candles: deque[ChartCandle] = field(default_factory=lambda: deque(maxlen=CHART_WINDOW_SIZE))
@@ -87,7 +90,8 @@ class SymbolState:
 class _PaperRiskBook:
     startingEquityUsd: float
     realizedPnlUsd: float
-    positions: dict[str, EnginePosition | "ComparisonPaperPosition"]
+    positions: dict[str, "EnginePosition | ComparisonPaperPosition"]
+    contractSizeOf: "Callable[[str], float]" = field(default=lambda symbol: 1.0)
 
     @property
     def unrealizedPnlUsd(self) -> float:
@@ -101,7 +105,9 @@ class _PaperRiskBook:
     def availableMarginUsd(self) -> float:
         used_margin = 0.0
         for position in self.positions.values():
-            used_margin += abs(position.size * position.entryPrice) / 3.0
+            used_margin += (
+                abs(position.size * position.entryPrice * self.contractSizeOf(position.symbol)) / 3.0
+            )
         return round(max(self.currentEquityUsd - used_margin, 0.0), 2)
 
 
@@ -139,7 +145,7 @@ class EngineRuntimeState:
         self._refresh_drawdown_tracking()
 
     @property
-    def remoteAccount(self) -> PacificaRemoteAccountSnapshot | None:
+    def remoteAccount(self) -> Mt5RemoteAccountSnapshot | None:
         if self.remoteSnapshot is None:
             return None
         return self.remoteSnapshot.account
@@ -202,14 +208,17 @@ class EngineRuntimeState:
             startingEquityUsd=self.startingEquityUsd,
             realizedPnlUsd=self.comparisonRealizedPnlUsd,
             positions=self.comparisonPositions,
+            contractSizeOf=self._contract_size,
         )
 
     def bootstrap_markets(self, symbols: Iterable[str]) -> None:
         baselines = {
-            "BTC": 89_000.0,
-            "ETH": 3_200.0,
-            "SOL": 180.0,
-            "BNB": 640.0,
+            "EURUSD": 1.085,
+            "GBPUSD": 1.27,
+            "USDJPY": 151.5,
+            "XAUUSD": 2_350.0,
+            "BTCUSD": 62_000.0,
+            "ETHUSD": 3_200.0,
         }
         for symbol in symbols:
             if symbol in self.markets:
@@ -320,10 +329,13 @@ class EngineRuntimeState:
             market = self.markets.get(symbol)
             if market is None:
                 continue
+            market.digits = spec.digits
             market.tickSize = spec.tickSize
-            market.lotSize = spec.lotSize
-            market.minOrderSizeUsd = spec.minOrderSizeUsd
-            market.maxLeverage = spec.maxLeverage
+            market.tickValue = spec.tickValue
+            market.contractSize = spec.contractSize
+            market.volumeStep = spec.volumeStep
+            market.volumeMin = spec.volumeMin
+            market.volumeMax = spec.volumeMax
             updated += 1
         return updated
 
@@ -355,7 +367,6 @@ class EngineRuntimeState:
         self,
         *,
         paused: bool,
-        session_account_address: str | None,
         last_operator_action: str | None,
         last_operator_action_at: datetime | None,
         last_account_sync_attempt_at: datetime | None,
@@ -386,10 +397,13 @@ class EngineRuntimeState:
                     spreadBps=market.spreadBps,
                     bidPrice=market.bidPrice,
                     askPrice=market.askPrice,
+                    digits=market.digits,
                     tickSize=market.tickSize,
-                    lotSize=market.lotSize,
-                    minOrderSizeUsd=market.minOrderSizeUsd,
-                    maxLeverage=market.maxLeverage,
+                    tickValue=market.tickValue,
+                    contractSize=market.contractSize,
+                    volumeStep=market.volumeStep,
+                    volumeMin=market.volumeMin,
+                    volumeMax=market.volumeMax,
                     updatedAt=market.updatedAt,
                     priceHistory=list(market.priceHistory),
                     candles=list(market.candles),
@@ -410,7 +424,6 @@ class EngineRuntimeState:
             ),
             operator=PersistedOperatorState(
                 paused=paused,
-                sessionAccountAddress=session_account_address,
                 lastOperatorAction=last_operator_action,
                 lastOperatorActionAt=last_operator_action_at,
                 lastAccountSyncAttemptAt=last_account_sync_attempt_at,
@@ -444,10 +457,13 @@ class EngineRuntimeState:
                 spreadBps=market.spreadBps,
                 bidPrice=market.bidPrice,
                 askPrice=market.askPrice,
+                digits=market.digits,
                 tickSize=market.tickSize,
-                lotSize=market.lotSize,
-                minOrderSizeUsd=market.minOrderSizeUsd,
-                maxLeverage=market.maxLeverage,
+                tickValue=market.tickValue,
+                contractSize=market.contractSize,
+                volumeStep=market.volumeStep,
+                volumeMin=market.volumeMin,
+                volumeMax=market.volumeMax,
                 updatedAt=market.updatedAt,
             )
             restored_market.priceHistory = deque(
@@ -574,7 +590,12 @@ class EngineRuntimeState:
             setup=signal.setup,
             confidence=signal.confidence,
             notionalUsd=signal.notionalUsd,
-            riskUsd=round(abs(signal.entryPrice - signal.stopLoss) * signal.size, 2),
+            riskUsd=round(
+                abs(signal.entryPrice - signal.stopLoss)
+                * signal.size
+                * self._contract_size(signal.symbol),
+                2,
+            ),
             executionMode=execution_mode,
         )
         self._refresh_drawdown_tracking()
@@ -601,7 +622,12 @@ class EngineRuntimeState:
             pnlPct=0.0,
             riskState=risk_state,
             executionMode=execution_mode,
-            riskUsd=round(abs(signal.entryPrice - signal.stopLoss) * signal.size, 2),
+            riskUsd=round(
+                abs(signal.entryPrice - signal.stopLoss)
+                * signal.size
+                * self._contract_size(signal.symbol),
+                2,
+            ),
             openedAt=datetime.now(timezone.utc),
         )
         self._refresh_drawdown_tracking()
@@ -612,7 +638,7 @@ class EngineRuntimeState:
             return None
 
         closed_at = datetime.now(timezone.utc)
-        pnl = self._calculate_pnl(position.side, position.entryPrice, exit_price, position.size)
+        pnl = self._calculate_pnl(symbol, position.side, position.entryPrice, exit_price, position.size)
         self.realizedPnlUsd = round(self.realizedPnlUsd + pnl, 2)
         closed_trade = self._build_closed_trade(
             book="primary",
@@ -632,7 +658,7 @@ class EngineRuntimeState:
             side=position.side,
             price=exit_price,
             size=position.size,
-            notional_usd=position.size * exit_price,
+            notional_usd=self._position_value_usd(symbol, exit_price, position.size),
             pnl_usd=pnl,
             signal_id=position.signalId,
         )
@@ -654,7 +680,7 @@ class EngineRuntimeState:
             return None
 
         closed_at = datetime.now(timezone.utc)
-        pnl = self._calculate_pnl(position.side, position.entryPrice, exit_price, position.size)
+        pnl = self._calculate_pnl(symbol, position.side, position.entryPrice, exit_price, position.size)
         self.comparisonRealizedPnlUsd = round(self.comparisonRealizedPnlUsd + pnl, 2)
         closed_trade = self._build_closed_trade(
             book="comparison",
@@ -671,7 +697,7 @@ class EngineRuntimeState:
     def record_live_closed_trade(
         self,
         *,
-        position: PacificaRemotePositionSnapshot,
+        position: Mt5RemotePositionSnapshot,
         execution_mode: ExecutionMode,
         exit_price: float | None,
         reason: str,
@@ -681,12 +707,17 @@ class EngineRuntimeState:
         closed_at = datetime.now(timezone.utc)
         resolved_exit_price = round(exit_price if exit_price is not None else position.entryPrice, 4)
         pnl = (
-            self._calculate_pnl(position.side, position.entryPrice, resolved_exit_price, position.size)
+            self._calculate_pnl(
+                position.symbol, position.side, position.entryPrice, resolved_exit_price, position.size
+            )
             if exit_price is not None
             else 0.0
         )
         risk_usd = (
-            round(abs(position.entryPrice - stop_loss) * position.size, 2)
+            round(
+                abs(position.entryPrice - stop_loss) * position.size * self._contract_size(position.symbol),
+                2,
+            )
             if stop_loss is not None
             else None
         )
@@ -831,8 +862,8 @@ class EngineRuntimeState:
             ),
             recentClosedTrades=recent_closed_trades,
             trackingBasis=(
-                "Live testnet performance is built from synced Pacifica account equity and "
-                "closed positions inferred from attached TP/SL orders."
+                "Live demo performance is built from synced MT5 account equity and closed "
+                "positions inferred from MT5 deal history."
             ),
         )
 
@@ -905,7 +936,12 @@ class EngineRuntimeState:
         risk_usd = (
             round(position.riskUsd, 2)
             if position.riskUsd is not None
-            else round(abs(position.entryPrice - position.stopLoss) * position.size, 2)
+            else round(
+                abs(position.entryPrice - position.stopLoss)
+                * position.size
+                * self._contract_size(position.symbol),
+                2,
+            )
         )
         return PaperClosedTrade(
             id=str(uuid4()),
@@ -921,7 +957,11 @@ class EngineRuntimeState:
             stopLoss=round(position.stopLoss, 4),
             takeProfit=round(position.takeProfit, 4),
             size=round(position.size, 6),
-            notionalUsd=round(position.notionalUsd or (position.size * position.entryPrice), 2),
+            notionalUsd=round(
+                position.notionalUsd
+                or self._position_value_usd(position.symbol, position.entryPrice, position.size),
+                2,
+            ),
             riskUsd=risk_usd,
             pnlUsd=round(pnl, 2),
             rMultiple=(
@@ -963,8 +1003,10 @@ class EngineRuntimeState:
         position: EnginePosition | "ComparisonPaperPosition",
         mark_price: float,
     ) -> None:
-        pnl = self._calculate_pnl(position.side, position.entryPrice, mark_price, position.size)
-        notional = max(position.entryPrice * position.size, 1.0)
+        pnl = self._calculate_pnl(
+            position.symbol, position.side, position.entryPrice, mark_price, position.size
+        )
+        notional = max(self._position_value_usd(position.symbol, position.entryPrice, position.size), 1.0)
         position.markPrice = round(mark_price, 4)
         position.pnlUsd = round(pnl, 2)
         position.pnlPct = round((pnl / notional) * 100, 2)
@@ -976,7 +1018,7 @@ class EngineRuntimeState:
     ) -> float:
         used_margin = 0.0
         for position in positions.values():
-            used_margin += abs(position.size * position.entryPrice) / 3.0
+            used_margin += self._position_value_usd(position.symbol, position.entryPrice, position.size) / 3.0
         return round(max(equity_usd - used_margin, 0.0), 2)
 
     def _refresh_drawdown_tracking(self) -> None:
@@ -1046,7 +1088,7 @@ class EngineRuntimeState:
         remote_account = self.remoteAccount
         if remote_account:
             pnl_usd = round(remote_account.equityUsd - remote_account.balanceUsd, 2)
-            pnl_label = "Pacifica equity minus settled balance (open PnL estimate)."
+            pnl_label = "MT5 equity minus balance (open PnL estimate)."
         else:
             pnl_usd = round(self.realizedPnlUsd + self.unrealizedPnlUsd, 2)
             pnl_label = "Paper strategy PnL across open and closed trades."
@@ -1068,7 +1110,6 @@ class EngineRuntimeState:
             generatedAt=datetime.now(timezone.utc),
             bot=BotSnapshot(
                 mode=settings.botMode,
-                network=settings.pacificaNetwork,
                 status=(
                     "healthy"
                     if all(
@@ -1079,43 +1120,29 @@ class EngineRuntimeState:
                     else "degraded"
                 ),
                 liveTradingEnabled=settings.enableLiveTrading,
-                builderCode=settings.pacificaBuilderCode,
-                agentWalletConfigured=bool(settings.pacificaAgentPrivateKey),
+                mt5Server=settings.mt5Server,
+                mt5LoginConfigured=bool(settings.mt5Login),
             ),
             operator=operator,
             services=services,
             account=AccountSnapshot(
-                source="pacifica" if remote_account else "paper",
+                source="mt5" if remote_account else "paper",
                 equityUsd=remote_account.equityUsd if remote_account else self.currentEquityUsd,
                 availableMarginUsd=(
                     remote_account.availableMarginUsd if remote_account else self.availableMarginUsd
                 ),
                 balanceUsd=remote_account.balanceUsd if remote_account else None,
-                availableToWithdrawUsd=(
-                    remote_account.availableToWithdrawUsd if remote_account else None
-                ),
-                pendingBalanceUsd=remote_account.pendingBalanceUsd if remote_account else None,
                 totalMarginUsedUsd=remote_account.totalMarginUsedUsd if remote_account else None,
-                crossMaintenanceMarginUsd=(
-                    remote_account.crossMaintenanceMarginUsd if remote_account else None
-                ),
+                marginLevelPct=remote_account.marginLevelPct if remote_account else None,
+                currency=remote_account.currency if remote_account else None,
+                leverage=remote_account.leverage if remote_account else None,
                 pnlUsd=pnl_usd,
                 pnlLabel=pnl_label,
                 openPositions=remote_account.openPositions if remote_account else len(self.positions),
                 openOrders=remote_account.openOrders if remote_account else 0,
-                stopOrders=remote_account.stopOrders if remote_account else 0,
                 maxDailyLossPct=settings.maxDailyLossPct,
-                feeLevel=remote_account.feeLevel if remote_account else None,
-                makerFeeRate=remote_account.makerFeeRate if remote_account else None,
-                takerFeeRate=remote_account.takerFeeRate if remote_account else None,
-                useLastTradedPriceForStops=(
-                    remote_account.useLastTradedPriceForStops if remote_account else None
-                ),
                 lastSyncedAt=(
                     self.remoteSnapshot.syncedAt if self.remoteSnapshot else None
-                ),
-                lastOrderId=(
-                    self.remoteSnapshot.lastOrderId if self.remoteSnapshot else None
                 ),
             ),
             paperAccount=self.paper_account_snapshot(),
@@ -1126,7 +1153,7 @@ class EngineRuntimeState:
                 self.live_performance_snapshot(
                     "contrarian" if settings.contrarianExecutionEnabled else "normal"
                 )
-                if settings.botMode in {"testnet", "mainnet"} and remote_account
+                if settings.botMode in {"demo", "live"} and remote_account
                 else None
             ),
             watchlist=watchlist,
@@ -1141,14 +1168,16 @@ class EngineRuntimeState:
             positions=list(self.positions.values()),
             remotePositions=[
                 DashboardRemotePositionSnapshot(
+                    ticket=position.ticket,
                     symbol=position.symbol,
                     side=position.side,
                     size=position.size,
                     entryPrice=position.entryPrice,
+                    stopLoss=position.stopLoss,
+                    takeProfit=position.takeProfit,
                     notionalUsd=position.notionalUsd,
-                    marginUsd=position.marginUsd,
-                    fundingUsd=position.fundingUsd,
-                    isolated=position.isolated,
+                    swapUsd=position.swapUsd,
+                    profitUsd=position.profitUsd,
                     openedAt=position.openedAt,
                     updatedAt=position.updatedAt,
                 )
@@ -1157,18 +1186,14 @@ class EngineRuntimeState:
             openOrders=[
                 OpenOrderSnapshot(
                     orderId=order.orderId,
-                    clientOrderId=order.clientOrderId,
                     symbol=order.symbol,
                     side=order.side,
                     orderType=order.orderType,
                     price=order.price,
                     stopPrice=order.stopPrice,
-                    initialAmount=order.initialAmount,
-                    filledAmount=order.filledAmount,
-                    cancelledAmount=order.cancelledAmount,
-                    remainingAmount=order.remainingAmount,
+                    volume=order.volume,
+                    volumeRemaining=order.volumeRemaining,
                     notionalUsd=order.notionalUsd,
-                    reduceOnly=order.reduceOnly,
                     createdAt=order.createdAt,
                     updatedAt=order.updatedAt,
                 )
@@ -1179,10 +1204,28 @@ class EngineRuntimeState:
             mlModel=ml_model,
         )
 
-    def _calculate_pnl(self, side: str, entry_price: float, exit_price: float, size: float) -> float:
-        if side == "long":
-            return (exit_price - entry_price) * size
-        return (entry_price - exit_price) * size
+    def _contract_size(self, symbol: str) -> float:
+        market = self.markets.get(symbol)
+        if market is not None and market.contractSize:
+            return market.contractSize
+        return 1.0
+
+    def _position_value_usd(self, symbol: str, price: float, size: float) -> float:
+        return round(abs(size * price * self._contract_size(symbol)), 2)
+
+    def _calculate_pnl(
+        self,
+        symbol: str,
+        side: str,
+        entry_price: float,
+        exit_price: float,
+        size: float,
+    ) -> float:
+        price_diff = (exit_price - entry_price) if side == "long" else (entry_price - exit_price)
+        market = self.markets.get(symbol)
+        if market is not None and market.tickSize and market.tickValue:
+            return (price_diff / market.tickSize) * market.tickValue * size
+        return price_diff * size * self._contract_size(symbol)
 
 
 class ComparisonPaperPosition(BaseModel):
@@ -1212,10 +1255,13 @@ class PersistedSymbolState(BaseModel):
     spreadBps: float
     bidPrice: float | None = None
     askPrice: float | None = None
+    digits: int | None = None
     tickSize: float | None = None
-    lotSize: float | None = None
-    minOrderSizeUsd: float | None = None
-    maxLeverage: int | None = None
+    tickValue: float | None = None
+    contractSize: float | None = None
+    volumeStep: float | None = None
+    volumeMin: float | None = None
+    volumeMax: float | None = None
     updatedAt: datetime | None = None
     priceHistory: list[float] = Field(default_factory=list)
     candles: list[ChartCandle] = Field(default_factory=list)
@@ -1225,102 +1271,96 @@ class PersistedRemoteAccountSnapshot(BaseModel):
     equityUsd: float
     availableMarginUsd: float
     balanceUsd: float
+    totalMarginUsedUsd: float
+    marginLevelPct: float | None = None
+    currency: str
+    leverage: int
+    tradeAllowed: bool
     openPositions: int
-    availableToWithdrawUsd: float | None = None
-    pendingBalanceUsd: float | None = None
-    totalMarginUsedUsd: float | None = None
-    crossMaintenanceMarginUsd: float | None = None
     openOrders: int = 0
-    stopOrders: int = 0
-    feeLevel: int | None = None
-    makerFeeRate: float | None = None
-    takerFeeRate: float | None = None
-    useLastTradedPriceForStops: bool | None = None
     updatedAt: datetime | None = None
 
     @classmethod
     def from_runtime(
         cls,
-        snapshot: PacificaRemoteAccountSnapshot,
+        snapshot: Mt5RemoteAccountSnapshot,
     ) -> "PersistedRemoteAccountSnapshot":
         return cls(
             equityUsd=snapshot.equityUsd,
             availableMarginUsd=snapshot.availableMarginUsd,
             balanceUsd=snapshot.balanceUsd,
-            openPositions=snapshot.openPositions,
-            availableToWithdrawUsd=snapshot.availableToWithdrawUsd,
-            pendingBalanceUsd=snapshot.pendingBalanceUsd,
             totalMarginUsedUsd=snapshot.totalMarginUsedUsd,
-            crossMaintenanceMarginUsd=snapshot.crossMaintenanceMarginUsd,
+            marginLevelPct=snapshot.marginLevelPct,
+            currency=snapshot.currency,
+            leverage=snapshot.leverage,
+            tradeAllowed=snapshot.tradeAllowed,
+            openPositions=snapshot.openPositions,
             openOrders=snapshot.openOrders,
-            stopOrders=snapshot.stopOrders,
-            feeLevel=snapshot.feeLevel,
-            makerFeeRate=snapshot.makerFeeRate,
-            takerFeeRate=snapshot.takerFeeRate,
-            useLastTradedPriceForStops=snapshot.useLastTradedPriceForStops,
             updatedAt=snapshot.updatedAt,
         )
 
-    def to_runtime(self) -> PacificaRemoteAccountSnapshot:
-        return PacificaRemoteAccountSnapshot(
+    def to_runtime(self) -> Mt5RemoteAccountSnapshot:
+        return Mt5RemoteAccountSnapshot(
             equityUsd=self.equityUsd,
             availableMarginUsd=self.availableMarginUsd,
             balanceUsd=self.balanceUsd,
-            openPositions=self.openPositions,
-            availableToWithdrawUsd=self.availableToWithdrawUsd,
-            pendingBalanceUsd=self.pendingBalanceUsd,
             totalMarginUsedUsd=self.totalMarginUsedUsd,
-            crossMaintenanceMarginUsd=self.crossMaintenanceMarginUsd,
+            marginLevelPct=self.marginLevelPct,
+            currency=self.currency,
+            leverage=self.leverage,
+            tradeAllowed=self.tradeAllowed,
+            openPositions=self.openPositions,
             openOrders=self.openOrders,
-            stopOrders=self.stopOrders,
-            feeLevel=self.feeLevel,
-            makerFeeRate=self.makerFeeRate,
-            takerFeeRate=self.takerFeeRate,
-            useLastTradedPriceForStops=self.useLastTradedPriceForStops,
             updatedAt=self.updatedAt,
         )
 
 
 class PersistedRemotePositionSnapshot(BaseModel):
+    ticket: int
     symbol: str
     side: str
     size: float
     entryPrice: float
+    stopLoss: float | None = None
+    takeProfit: float | None = None
     notionalUsd: float
-    marginUsd: float | None = None
-    fundingUsd: float | None = None
-    isolated: bool = False
+    swapUsd: float | None = None
+    profitUsd: float | None = None
     openedAt: datetime | None = None
     updatedAt: datetime | None = None
 
     @classmethod
     def from_runtime(
         cls,
-        snapshot: PacificaRemotePositionSnapshot,
+        snapshot: Mt5RemotePositionSnapshot,
     ) -> "PersistedRemotePositionSnapshot":
         return cls(
+            ticket=snapshot.ticket,
             symbol=snapshot.symbol,
             side=snapshot.side,
             size=snapshot.size,
             entryPrice=snapshot.entryPrice,
+            stopLoss=snapshot.stopLoss,
+            takeProfit=snapshot.takeProfit,
             notionalUsd=snapshot.notionalUsd,
-            marginUsd=snapshot.marginUsd,
-            fundingUsd=snapshot.fundingUsd,
-            isolated=snapshot.isolated,
+            swapUsd=snapshot.swapUsd,
+            profitUsd=snapshot.profitUsd,
             openedAt=snapshot.openedAt,
             updatedAt=snapshot.updatedAt,
         )
 
-    def to_runtime(self) -> PacificaRemotePositionSnapshot:
-        return PacificaRemotePositionSnapshot(
+    def to_runtime(self) -> Mt5RemotePositionSnapshot:
+        return Mt5RemotePositionSnapshot(
+            ticket=self.ticket,
             symbol=self.symbol,
             side=self.side,
             size=self.size,
             entryPrice=self.entryPrice,
+            stopLoss=self.stopLoss,
+            takeProfit=self.takeProfit,
             notionalUsd=self.notionalUsd,
-            marginUsd=self.marginUsd,
-            fundingUsd=self.fundingUsd,
-            isolated=self.isolated,
+            swapUsd=self.swapUsd,
+            profitUsd=self.profitUsd,
             openedAt=self.openedAt,
             updatedAt=self.updatedAt,
         )
@@ -1328,59 +1368,47 @@ class PersistedRemotePositionSnapshot(BaseModel):
 
 class PersistedRemoteOpenOrderSnapshot(BaseModel):
     orderId: int
-    clientOrderId: str | None = None
     symbol: str
     side: str
     orderType: str
     price: float
     stopPrice: float | None = None
-    initialAmount: float
-    filledAmount: float
-    cancelledAmount: float
-    remainingAmount: float
+    volume: float
+    volumeRemaining: float
     notionalUsd: float
-    reduceOnly: bool
     createdAt: datetime | None = None
     updatedAt: datetime | None = None
 
     @classmethod
     def from_runtime(
         cls,
-        snapshot: PacificaRemoteOpenOrderSnapshot,
+        snapshot: Mt5RemoteOpenOrderSnapshot,
     ) -> "PersistedRemoteOpenOrderSnapshot":
         return cls(
             orderId=snapshot.orderId,
-            clientOrderId=snapshot.clientOrderId,
             symbol=snapshot.symbol,
             side=snapshot.side,
             orderType=snapshot.orderType,
             price=snapshot.price,
             stopPrice=snapshot.stopPrice,
-            initialAmount=snapshot.initialAmount,
-            filledAmount=snapshot.filledAmount,
-            cancelledAmount=snapshot.cancelledAmount,
-            remainingAmount=snapshot.remainingAmount,
+            volume=snapshot.volume,
+            volumeRemaining=snapshot.volumeRemaining,
             notionalUsd=snapshot.notionalUsd,
-            reduceOnly=snapshot.reduceOnly,
             createdAt=snapshot.createdAt,
             updatedAt=snapshot.updatedAt,
         )
 
-    def to_runtime(self) -> PacificaRemoteOpenOrderSnapshot:
-        return PacificaRemoteOpenOrderSnapshot(
+    def to_runtime(self) -> Mt5RemoteOpenOrderSnapshot:
+        return Mt5RemoteOpenOrderSnapshot(
             orderId=self.orderId,
-            clientOrderId=self.clientOrderId,
             symbol=self.symbol,
             side=self.side,
             orderType=self.orderType,
             price=self.price,
             stopPrice=self.stopPrice,
-            initialAmount=self.initialAmount,
-            filledAmount=self.filledAmount,
-            cancelledAmount=self.cancelledAmount,
-            remainingAmount=self.remainingAmount,
+            volume=self.volume,
+            volumeRemaining=self.volumeRemaining,
             notionalUsd=self.notionalUsd,
-            reduceOnly=self.reduceOnly,
             createdAt=self.createdAt,
             updatedAt=self.updatedAt,
         )
@@ -1390,7 +1418,6 @@ class PersistedRemoteTradingSnapshot(BaseModel):
     account: PersistedRemoteAccountSnapshot
     positions: list[PersistedRemotePositionSnapshot] = Field(default_factory=list)
     openOrders: list[PersistedRemoteOpenOrderSnapshot] = Field(default_factory=list)
-    lastOrderId: int | None = None
     syncedAt: datetime | None = None
 
     @classmethod
@@ -1408,7 +1435,6 @@ class PersistedRemoteTradingSnapshot(BaseModel):
                 PersistedRemoteOpenOrderSnapshot.from_runtime(order)
                 for order in snapshot.openOrders
             ],
-            lastOrderId=snapshot.lastOrderId,
             syncedAt=snapshot.syncedAt,
         )
 
@@ -1417,21 +1443,19 @@ class PersistedRemoteTradingSnapshot(BaseModel):
             account=self.account.to_runtime(),
             positions=[position.to_runtime() for position in self.positions],
             openOrders=[order.to_runtime() for order in self.openOrders],
-            lastOrderId=self.lastOrderId,
             syncedAt=self.syncedAt,
         )
 
 
 class PersistedOperatorState(BaseModel):
     paused: bool = False
-    sessionAccountAddress: str | None = None
     lastOperatorAction: str | None = None
     lastOperatorActionAt: datetime | None = None
     lastAccountSyncAttemptAt: datetime | None = None
 
 
 class PersistedEngineState(BaseModel):
-    schemaVersion: int = 4
+    schemaVersion: int = 5
     persistedAt: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     startingEquityUsd: float
     realizedPnlUsd: float

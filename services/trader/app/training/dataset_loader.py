@@ -22,7 +22,7 @@ class LocalTrainingDatasetLoader:
         notes: list[str] = []
 
         for symbol in symbols:
-            path = self.root / "raw" / self.settings.pacificaNetwork / symbol / interval / "mark_candles.jsonl"
+            path = self.root / "raw" / self.settings.botMode / symbol / interval / "mark_candles.jsonl"
             if not path.exists():
                 notes.append(f"{symbol}: local candle file not found")
                 continue

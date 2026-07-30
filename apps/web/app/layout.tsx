@@ -4,8 +4,8 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Pacifica Bot Console",
-  description: "Live operator console for a Pacifica-native price action trading bot."
+  title: "VTFX MT5 Bot Console",
+  description: "Live operator console for an MT5-native price action trading bot."
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

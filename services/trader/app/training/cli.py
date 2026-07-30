@@ -5,13 +5,13 @@ import asyncio
 from pathlib import Path
 
 from app.config import Settings
-from app.pacifica.client import PacificaClient
+from app.mt5.client import Mt5Client
 from app.strategy.ml_model import MlSignalModel
-from app.training.collector import PacificaTrainingCollector
+from app.training.collector import Mt5TrainingCollector
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Pacifica ML training dataset tools")
+    parser = argparse.ArgumentParser(description="MT5 ML training dataset tools")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     backfill_parser = subparsers.add_parser(
@@ -43,7 +43,7 @@ def main() -> None:
 
     stream_parser = subparsers.add_parser(
         "stream",
-        help="Append live Pacifica prices and trades to local JSONL files.",
+        help="Poll live MT5 ticks and append them to local JSONL files.",
     )
     stream_parser.add_argument("--symbols", default="", help="Comma-separated symbols. Defaults to env symbols.")
     stream_parser.add_argument(
@@ -52,14 +52,10 @@ def main() -> None:
         help="Optional output directory. Defaults to services/trader/data/training.",
     )
     stream_parser.add_argument(
-        "--no-prices",
-        action="store_true",
-        help="Do not capture websocket prices.",
-    )
-    stream_parser.add_argument(
-        "--no-trades",
-        action="store_true",
-        help="Do not capture websocket trades.",
+        "--poll-interval-sec",
+        type=float,
+        default=2.0,
+        help="Seconds between tick polls.",
     )
 
     fit_parser = subparsers.add_parser(
@@ -75,7 +71,7 @@ def main() -> None:
     fit_parser.add_argument(
         "--no-local-dataset",
         action="store_true",
-        help="Skip local dataset files and train from Pacifica REST candles instead.",
+        help="Skip local dataset files and train from MT5 candles instead.",
     )
 
     args = parser.parse_args()
@@ -93,39 +89,42 @@ async def run(args: argparse.Namespace) -> None:
     if getattr(args, "no_local_dataset", False):
         settings.mlPreferLocalDataset = False
 
-    client = PacificaClient(settings)
-    collector = PacificaTrainingCollector(
+    client = Mt5Client(settings)
+    collector = Mt5TrainingCollector(
         settings,
         client,
         output_root=output_dir,
     )
 
     try:
+        connected = await client.connect()
+        if not connected:
+            print(f"Warning: MT5 connect() failed: {client.lastError}")
+
         if args.command == "backfill":
             intervals = _parse_intervals(args.intervals)
             results = await collector.backfill(
                 symbols=symbols,
                 intervals=intervals,
                 lookback_days=args.lookback_days,
-                include_recent_trades=not args.skip_recent_trades,
+                include_recent_ticks=not args.skip_recent_trades,
             )
             for result in results:
                 print(
                     f"{result.symbol} {result.interval}: "
-                    f"{result.candleCount} candles, {result.tradeCount} recent trades"
+                    f"{result.candleCount} candles, {result.tickCount} recent ticks"
                 )
             print(f"Saved dataset under {collector.outputRoot}")
             return
 
         if args.command == "stream":
             print(
-                "Streaming live Pacifica data to "
+                "Streaming live MT5 ticks to "
                 f"{collector.outputRoot}. Press Ctrl+C to stop."
             )
             await collector.stream_live(
                 symbols=symbols,
-                capture_prices=not args.no_prices,
-                capture_trades=not args.no_trades,
+                poll_interval_sec=args.poll_interval_sec,
             )
             return
 
@@ -145,7 +144,7 @@ async def run(args: argparse.Namespace) -> None:
             )
             return
     finally:
-        await client.close()
+        await client.shutdown()
 
 
 def _parse_csv(value: str) -> list[str]:

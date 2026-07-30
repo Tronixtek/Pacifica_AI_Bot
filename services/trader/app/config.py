@@ -22,31 +22,29 @@ class Settings(BaseSettings):
     )
 
     appEnv: str = "development"
-    serviceName: str = "pacifica-trader"
+    serviceName: str = "vtfx-mt5-trader"
     frontendOrigin: str = "http://127.0.0.1:3000"
     logLevel: str = "INFO"
     logFormat: Literal["json", "plain"] = "json"
     auditLogPath: Path = Path("logs/audit.jsonl")
 
-    botMode: Literal["paper", "testnet", "mainnet"] = "paper"
-    pacificaNetwork: Literal["testnet", "mainnet"] = "testnet"
-    pacificaRestUrl: str = "https://test-api.pacifica.fi/api/v1"
-    pacificaWsUrl: str = "wss://test-ws.pacifica.fi/ws"
-    pacificaAccountAddress: str | None = None
-    pacificaAgentPrivateKey: str | None = None
-    pacificaApiConfigKey: str | None = None
-    pacificaBuilderCode: str | None = None
+    botMode: Literal["paper", "demo", "live"] = "paper"
+    mt5Login: int | None = None
+    mt5Password: str | None = None
+    mt5Server: str | None = None
+    mt5TerminalPath: str | None = None
+    mt5MagicNumber: int = 990_211
+    mt5DeviationPoints: int = 20
+    mt5ConnectTimeoutMs: int = 10_000
 
     symbols: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["BTC", "ETH", "SOL"]
+        default_factory=lambda: ["EURUSD", "XAUUSD", "BTCUSD"]
     )
     useSimulatedFeed: bool = True
-    preferWebsocketFeed: bool = True
     enableLiveTrading: bool = False
     pollIntervalSec: float = 2.0
     accountSyncIntervalSec: float = 10.0
     marketDataStaleAfterSec: float = 15.0
-    wsHeartbeatSec: float = 20.0
 
     startingEquityUsd: float = 10_000.0
     maxRiskPerTradePct: float = 0.75
@@ -64,8 +62,6 @@ class Settings(BaseSettings):
     priceActionMomentumWindow: int = 5
     priceActionBreakoutBuffer: float = 0.0016
     priceActionRewardToRisk: float = 2.1
-    signatureExpiryWindowMs: int = 5_000
-    slippagePercent: float = 0.35
     mlEnabled: bool = True
     mlCandleInterval: str = "1m"
     mlTrainingLookbackCandles: int = 720
@@ -92,7 +88,7 @@ class Settings(BaseSettings):
         if isinstance(value, list):
             return [item.upper() for item in value if item]
         if not value:
-            return ["BTC", "ETH", "SOL"]
+            return ["EURUSD", "XAUUSD", "BTCUSD"]
         return [item.strip().upper() for item in value.split(",") if item.strip()]
 
 

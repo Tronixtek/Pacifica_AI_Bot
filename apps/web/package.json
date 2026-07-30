@@ -1,5 +1,5 @@
 {
-  "name": "@pacifica-hackathon/web",
+  "name": "@vtfx-mt5-bot/web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -8,7 +8,7 @@
     "start": "next start"
   },
   "dependencies": {
-    "@pacifica-hackathon/shared": "0.1.0",
+    "@vtfx-mt5-bot/shared": "0.1.0",
     "next": "^16.2.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

@@ -13,8 +13,8 @@
     "incremental": true,
     "baseUrl": ".",
     "paths": {
-      "@pacifica-hackathon/shared": ["packages/shared/src/index.ts"],
-      "@pacifica-hackathon/shared/*": ["packages/shared/src/*"]
+      "@vtfx-mt5-bot/shared": ["packages/shared/src/index.ts"],
+      "@vtfx-mt5-bot/shared/*": ["packages/shared/src/*"]
     }
   }
 }

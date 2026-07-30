@@ -1,9 +1,7 @@
-export type BotMode = "paper" | "testnet" | "mainnet";
-export type NetworkMode = "testnet" | "mainnet";
+export type BotMode = "paper" | "demo" | "live";
 export type SystemStatus = "healthy" | "degraded" | "offline";
 export type ProbeStatus = "healthy" | "degraded" | "offline" | "skipped";
-export type AccountSource = "paper" | "pacifica";
-export type AccountConfigurationSource = "env" | "session";
+export type AccountSource = "paper" | "mt5";
 export type SignalSetup = "breakout" | "liquidity_sweep" | "manual_test";
 export type SignalBias = "long" | "short";
 export type SignalStatus = "candidate" | "approved" | "blocked" | "executed";
@@ -29,11 +27,10 @@ export interface ServiceHealth {
 
 export interface BotSnapshot {
   mode: BotMode;
-  network: NetworkMode;
   status: SystemStatus;
   liveTradingEnabled: boolean;
-  builderCode: string | null;
-  agentWalletConfigured: boolean;
+  mt5Server: string | null;
+  mt5LoginConfigured: boolean;
 }
 
 export interface OperatorSnapshot {
@@ -50,22 +47,16 @@ export interface AccountSnapshot {
   equityUsd: number;
   availableMarginUsd: number;
   balanceUsd: number | null;
-  availableToWithdrawUsd: number | null;
-  pendingBalanceUsd: number | null;
   totalMarginUsedUsd: number | null;
-  crossMaintenanceMarginUsd: number | null;
+  marginLevelPct: number | null;
+  currency: string | null;
+  leverage: number | null;
   pnlUsd: number;
   pnlLabel: string;
   openPositions: number;
   openOrders: number;
-  stopOrders: number;
   maxDailyLossPct: number;
-  feeLevel: number | null;
-  makerFeeRate: number | null;
-  takerFeeRate: number | null;
-  useLastTradedPriceForStops: boolean | null;
   lastSyncedAt: string | null;
-  lastOrderId: number | null;
 }
 
 export interface PaperAccountSnapshot {
@@ -134,32 +125,30 @@ export interface EnginePosition {
 }
 
 export interface RemotePositionSnapshot {
+  ticket: number;
   symbol: string;
   side: SignalBias;
   size: number;
   entryPrice: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
   notionalUsd: number;
-  marginUsd: number | null;
-  fundingUsd: number | null;
-  isolated: boolean;
+  swapUsd: number | null;
+  profitUsd: number | null;
   openedAt: string | null;
   updatedAt: string | null;
 }
 
 export interface OpenOrderSnapshot {
   orderId: number;
-  clientOrderId: string | null;
   symbol: string;
   side: OrderSide;
   orderType: string;
   price: number;
   stopPrice: number | null;
-  initialAmount: number;
-  filledAmount: number;
-  cancelledAmount: number;
-  remainingAmount: number;
+  volume: number;
+  volumeRemaining: number;
   notionalUsd: number;
-  reduceOnly: boolean;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -333,18 +322,12 @@ export interface SignalPreviewResponse {
 
 export interface ConfigReadiness {
   mode: BotMode;
-  network: NetworkMode;
-  restUrl: string;
-  websocketUrl: string;
   useSimulatedFeed: boolean;
-  preferWebsocketFeed: boolean;
   liveTradingEnabled: boolean;
-  accountConfigured: boolean;
-  effectiveAccountAddress: string | null;
-  accountConfigurationSource: AccountConfigurationSource | null;
-  agentKeyConfigured: boolean;
-  apiConfigKeyConfigured: boolean;
-  builderCode: string | null;
+  mt5LoginConfigured: boolean;
+  mt5ServerConfigured: boolean;
+  mt5Connected: boolean;
+  mt5Server: string | null;
   symbols: string[];
 }
 
@@ -361,15 +344,6 @@ export interface DiagnosticsResponse {
   config: ConfigReadiness;
   services: ServiceHealth[];
   probes: DiagnosticProbe[];
-}
-
-export interface AccountLinkResponse {
-  ok: boolean;
-  message: string;
-  operator: OperatorSnapshot;
-  linkedAccountAddress: string | null;
-  accountConfigurationSource: AccountConfigurationSource | null;
-  generatedAt: string;
 }
 
 export interface SmokeTestOrderRequest {
