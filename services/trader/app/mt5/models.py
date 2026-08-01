@@ -16,6 +16,53 @@ class MarketSpec:
     volumeMin: float
     volumeMax: float
     fillingModes: list[str] = field(default_factory=list)
+    # Broker-enforced minimum distance, in points, between the market price and
+    # a stop or target. Orders violating it are rejected with "Invalid stops".
+    # Exness reports 0 here, but many brokers enforce 10-30.
+    stopsLevel: int = 0
+    freezeLevel: int = 0
+
+
+@dataclass(slots=True)
+class Bar:
+    """One closed OHLC bar on the strategy timeframe.
+
+    `spreadPoints` is the broker spread recorded on the bar, which lets the
+    strategy reject setups formed during a spread blowout without needing a
+    separate tick history.
+    """
+
+    time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
+    spreadPoints: int = 0
+    # The same spread expressed in price units. Carried alongside the point
+    # count so the strategy can compare a stop distance against the spread
+    # without needing the symbol spec.
+    spreadPrice: float = 0.0
+
+    @property
+    def range(self) -> float:
+        return self.high - self.low
+
+    @property
+    def body(self) -> float:
+        return abs(self.close - self.open)
+
+    @property
+    def upperWick(self) -> float:
+        return self.high - max(self.open, self.close)
+
+    @property
+    def lowerWick(self) -> float:
+        return min(self.open, self.close) - self.low
+
+    @property
+    def isBullish(self) -> bool:
+        return self.close >= self.open
 
 
 @dataclass(slots=True)

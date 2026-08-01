@@ -29,6 +29,7 @@ from app.mt5.client import Mt5Client
 from app.mt5.execution import Mt5ExecutionService
 from app.mt5.market_data import Mt5MarketDataService
 from app.mt5.models import (
+    Bar,
     RemoteOpenOrderSnapshot as Mt5RemoteOpenOrderSnapshot,
     RemotePositionSnapshot as Mt5RemotePositionSnapshot,
     RemoteTradingSnapshot,
@@ -62,12 +63,15 @@ class TradingEngine:
             trend_fast_window=settings.priceActionTrendFastWindow,
             trend_slow_window=settings.priceActionTrendSlowWindow,
             momentum_window=settings.priceActionMomentumWindow,
-            breakout_buffer=settings.priceActionBreakoutBuffer,
+            breakout_atr_multiple=settings.priceActionBreakoutAtrMultiple,
+            min_trend_separation_atr=settings.priceActionMinTrendSeparationAtr,
+            min_stop_atr_multiple=settings.priceActionMinStopAtrMultiple,
+            min_stop_spread_multiple=settings.priceActionMinStopSpreadMultiple,
             reward_to_risk=settings.priceActionRewardToRisk,
         )
         self.mlModel = MlSignalModel(settings, self.client)
         self.audit = AuditLogger(settings)
-        self.risk = RiskManager(settings)
+        self.risk = RiskManager(settings, self.client)
         self.stateStore = RuntimeStateStore(settings)
         self._task: asyncio.Task[None] | None = None
         self._running = False
@@ -78,10 +82,11 @@ class TradingEngine:
         self._lastOperatorAction: str | None = None
         self._lastOperatorActionAt: datetime | None = None
         self._lastCheckpointAt: datetime | None = None
+        self._dailyBaselineEquityUsd: float | None = None
+        self._dailyBaselineDate = None
 
     async def start(self) -> None:
         restored = self._restore_runtime_state()
-        self.state.bootstrap_markets(self.settings.symbols)
         self.state.add_event(
             "info",
             f"Engine booted in {self.settings.botMode} mode.",
@@ -95,11 +100,23 @@ class TradingEngine:
             details={"mode": self.settings.botMode},
         )
         if self.settings.contrarianExecutionEnabled:
+            multiple = self.settings.contrarianTargetRiskMultiple
+            target_note = (
+                f"targets sit at {multiple:.2f}R against the flipped stop"
+                if multiple > 0
+                else "the original stop becomes the profit target"
+            )
             self.state.add_event(
                 "info",
-                "Contrarian execution is enabled. Approved signals will flip direction and use the original stop as the profit target.",
+                (
+                    "Contrarian execution is enabled. Approved signals flip direction and "
+                    f"{target_note}."
+                ),
             )
-        await self._refresh_ml_model(force=True)
+
+        # Symbol resolution has to land before anything keys state off a symbol
+        # name, because the broker's name (EURUSDm) is what quotes, specs, and
+        # orders all arrive under.
         if not self.settings.useSimulatedFeed:
             connected = await self.client.connect()
             if connected:
@@ -110,6 +127,29 @@ class TradingEngine:
                     f"MT5 terminal connection failed: {self.client.lastError}",
                 )
             await self.marketData.start()
+            resolution = self.marketData.resolution
+            if resolution.resolved:
+                self.state.add_event("info", resolution.describe())
+            if resolution.unresolved:
+                self.state.add_event(
+                    "warning",
+                    f"These configured symbols have no broker match and will be skipped: "
+                    f"{', '.join(resolution.unresolved)}.",
+                )
+
+        if self.stateStore.discardReason:
+            self.state.add_event("warning", self.stateStore.discardReason)
+
+        # Second line of defence. The store's fingerprint covers configuration
+        # changes, but not a change of broker: the same configured symbols can
+        # resolve to different broker names (EURUSDm vs EURUSD.raw), leaving
+        # restored markets and positions the engine will never price again.
+        self._prune_unknown_symbols()
+
+        self.state.bootstrap_markets(self.engineSymbols)
+        await self._refresh_ml_model(force=True)
+
+        if not self.settings.useSimulatedFeed:
             market_spec_count = self.state.apply_market_specs(self.marketData.marketSpecs)
             if market_spec_count:
                 self.state.add_event(
@@ -120,6 +160,63 @@ class TradingEngine:
         self._running = True
         self._checkpoint_state(force=True)
         self._task = asyncio.create_task(self._run_loop())
+
+    @property
+    def engineSymbols(self) -> list[str]:
+        """Symbols the engine trades: broker names once resolved, configured names otherwise."""
+        return self.marketData.tradingSymbols
+
+    def _resolve_requested_symbol(self, symbol: str) -> str:
+        """Map an operator-supplied name onto the broker's exact spelling.
+
+        Accepts either the configured name (EURUSD) or the broker name
+        (EURUSDm), in any casing, and returns what the terminal expects.
+        Unrecognised input is returned trimmed so the caller can report it.
+        """
+        requested = symbol.strip()
+        for tradable in self.engineSymbols:
+            if tradable.casefold() == requested.casefold():
+                return tradable
+
+        resolved = self.marketData.resolution.resolved
+        for configured, broker_name in resolved.items():
+            if configured.casefold() == requested.casefold():
+                return broker_name
+
+        return requested
+
+    def _prune_unknown_symbols(self) -> None:
+        """Drop restored state for symbols this session will not trade.
+
+        A market left behind keeps its stale last price forever, because
+        nothing refreshes it. A position left behind is worse: it counts
+        against the open-position limit and its unrealised PnL is folded into
+        equity, so it distorts sizing for every real trade.
+        """
+        tradable = set(self.engineSymbols)
+        if not tradable:
+            return
+
+        stale_markets = [s for s in self.state.markets if s not in tradable]
+        stale_positions = [s for s in self.state.positions if s not in tradable]
+        stale_comparisons = [s for s in self.state.comparisonPositions if s not in tradable]
+
+        for symbol in stale_markets:
+            del self.state.markets[symbol]
+        for symbol in stale_positions:
+            del self.state.positions[symbol]
+        for symbol in stale_comparisons:
+            del self.state.comparisonPositions[symbol]
+
+        if stale_markets or stale_positions:
+            self.state.add_event(
+                "warning",
+                (
+                    f"Dropped restored state for {len(stale_markets)} market(s) and "
+                    f"{len(stale_positions)} position(s) that are not in this session's "
+                    f"watchlist: {', '.join(sorted(set(stale_markets + stale_positions)))}."
+                ),
+            )
 
     async def stop(self) -> None:
         self._running = False
@@ -390,7 +487,10 @@ class TradingEngine:
         )
 
     async def submit_smoke_test_order(self, symbol: str) -> OperatorActionResponse:
-        normalized_symbol = symbol.strip().upper()
+        # Resolve against the broker's own spelling rather than upper-casing.
+        # Exness suffixes with a lowercase "m" (EURUSDm), so a naive .upper()
+        # produced EURUSDM and never matched the watchlist.
+        normalized_symbol = self._resolve_requested_symbol(symbol)
         if self.settings.botMode != "demo":
             return OperatorActionResponse(
                 ok=False,
@@ -405,7 +505,7 @@ class TradingEngine:
                 operator=self.operator_snapshot(),
             )
 
-        if normalized_symbol not in self.settings.symbols:
+        if normalized_symbol not in self.engineSymbols:
             return OperatorActionResponse(
                 ok=False,
                 message=f"{normalized_symbol} is not in the configured symbol watchlist.",
@@ -630,7 +730,7 @@ class TradingEngine:
                 mt5ServerConfigured=bool(self.settings.mt5Server),
                 mt5Connected=self.client.connected,
                 mt5Server=self.settings.mt5Server,
-                symbols=self.settings.symbols,
+                symbols=self.engineSymbols,
             ),
             services=self._service_health(),
             probes=probes,
@@ -652,7 +752,7 @@ class TradingEngine:
             self._checkpoint_state()
             return
 
-        quotes = await self.marketData.refresh_quotes(self.settings.symbols)
+        quotes = await self.marketData.refresh_quotes(self.engineSymbols)
         if not quotes:
             self._emit_notice(
                 key="market-data-empty",
@@ -664,7 +764,9 @@ class TradingEngine:
             self._checkpoint_state()
             return
 
-        for symbol in self.settings.symbols:
+        # Quotes drive position management and the live price display every
+        # poll; strategy evaluation is driven separately off closed bars.
+        for symbol in self.engineSymbols:
             quote = quotes.get(symbol)
             if quote is None:
                 continue
@@ -673,8 +775,12 @@ class TradingEngine:
             if market is None:
                 continue
             self._handle_positions(market)
-            if not self._paused:
-                await self._scan_market(market)
+
+        closed_bars = await self.marketData.refresh_bars(self.engineSymbols)
+        if closed_bars and not self._paused:
+            for symbol, bars in closed_bars.items():
+                self.state.apply_bars(symbol, bars)
+                await self._scan_bars(symbol, bars)
 
         await self._sync_remote_account_if_due()
         self._checkpoint_state()
@@ -725,9 +831,41 @@ class TradingEngine:
         )
 
     async def _scan_market(self, market: SymbolState) -> None:
-        candidates = self.strategy.evaluate(market.symbol, list(market.priceHistory))
-        for candidate in candidates:
+        """Simulated-feed scanning: aggregate the tick sim into bars first.
+
+        Paper mode has no broker to fetch bars from, so the chart candles the
+        simulator already builds stand in for them. They are minute bars rather
+        than the configured strategy timeframe, which is fine for exercising the
+        product flow but is not a backtest.
+        """
+        bars = [self._bar_from_candle(candle) for candle in market.candles]
+        await self._scan_bars(market.symbol, bars)
+
+    async def _scan_bars(self, symbol: str, bars: list[Bar]) -> None:
+        if len(bars) < self.strategy.min_bars:
+            self._emit_notice(
+                key=f"bars-warming-{symbol}",
+                level="info",
+                message=(
+                    f"{symbol} has {len(bars)} of {self.strategy.min_bars} bars needed on the "
+                    f"{self.settings.strategyTimeframe} timeframe. Waiting for more history."
+                ),
+                cooldown_seconds=300,
+            )
+            return
+
+        for candidate in self.strategy.evaluate(symbol, bars):
             await self._handle_candidate(candidate)
+
+    @staticmethod
+    def _bar_from_candle(candle) -> Bar:
+        return Bar(
+            time=candle.time,
+            open=candle.open,
+            high=candle.high,
+            low=candle.low,
+            close=candle.close,
+        )
 
     async def _handle_candidate(self, candidate: StrategyCandidate) -> None:
         key = f"{candidate.symbol}:{candidate.setup}:{candidate.bias}"
@@ -773,13 +911,17 @@ class TradingEngine:
 
         self._lastSignalAt[key] = now
         execution_candidate, execution_note = self._apply_execution_policy(candidate)
-        decision = self.risk.review(
+        spec = self.marketData.marketSpecs.get(execution_candidate.symbol)
+        decision = await self.risk.review(
             execution_candidate,
             self._execution_risk_book(),
+            spec,
         )
         comparison_candidate = self._build_comparison_candidate(execution_candidate)
         comparison_decision = (
-            self.risk.review(comparison_candidate, self.state.comparison_risk_book())
+            await self.risk.review(
+                comparison_candidate, self.state.comparison_risk_book(), spec
+            )
             if self.settings.botMode == "paper"
             else None
         )
@@ -1013,7 +1155,7 @@ class TradingEngine:
 
     async def _refresh_ml_model(self, force: bool = False) -> None:
         try:
-            retrained = await self.mlModel.refresh_if_due(self.settings.symbols, force=force)
+            retrained = await self.mlModel.refresh_if_due(self.engineSymbols, force=force)
             if retrained:
                 self._emit_notice(
                     key="ml-model-trained",
@@ -1183,7 +1325,7 @@ class TradingEngine:
             )
 
         try:
-            quotes = await self.marketData.refresh_quotes(self.settings.symbols)
+            quotes = await self.marketData.refresh_quotes(self.engineSymbols)
             if quotes:
                 for quote in quotes.values():
                     self.state.ingest_quote(quote)
@@ -1292,21 +1434,54 @@ class TradingEngine:
             return candidate, None
 
         executed_bias = "short" if candidate.bias == "long" else "long"
+        stop_loss = candidate.takeProfit
+        take_profit, target_note = self._contrarian_target(
+            candidate, executed_bias, stop_loss
+        )
         execution_candidate = StrategyCandidate(
             symbol=candidate.symbol,
             setup=candidate.setup,
             bias=executed_bias,
             confidence=candidate.confidence,
             entryPrice=candidate.entryPrice,
-            stopLoss=candidate.takeProfit,
-            takeProfit=candidate.stopLoss,
+            stopLoss=stop_loss,
+            takeProfit=take_profit,
             reason=candidate.reason,
+            # Carried through so downstream sizing and guards keep the
+            # volatility and spread context the strategy measured.
+            atr=candidate.atr,
+            spreadPoints=candidate.spreadPoints,
         )
         execution_note = (
             f"Contrarian execution flipped the original {candidate.bias} idea into a "
-            f"{executed_bias} trade. Original stop is now take profit."
+            f"{executed_bias} trade. {target_note}"
         )
         return execution_candidate, execution_note
+
+    def _contrarian_target(
+        self,
+        candidate: StrategyCandidate,
+        executed_bias: str,
+        stop_loss: float,
+    ) -> tuple[float, str]:
+        """Target for a flipped signal, placed against the flipped risk.
+
+        Reusing the original stop as the target - the original behaviour -
+        yields roughly 0.43R and gives up most of the move. Because the stop is
+        unchanged, spread costs a fixed fraction of R no matter where the
+        target sits, so a near target is charged the same and paid far less.
+        """
+        multiple = self.settings.contrarianTargetRiskMultiple
+        risk = abs(candidate.entryPrice - stop_loss)
+        if multiple <= 0 or risk <= 0:
+            return candidate.stopLoss, "Original stop is now take profit."
+
+        take_profit = (
+            candidate.entryPrice + risk * multiple
+            if executed_bias == "long"
+            else candidate.entryPrice - risk * multiple
+        )
+        return take_profit, f"Target extended to {multiple:.2f}R against the flipped stop."
 
     def _build_comparison_candidate(
         self,
@@ -1381,17 +1556,38 @@ class TradingEngine:
         for order in remote_snapshot.openOrders:
             active_symbols.setdefault(order.symbol, order)
 
+        baseline = self._daily_baseline_equity_usd(remote_account)
         return _ExecutionRiskBook(
-            startingEquityUsd=(
-                remote_account.balanceUsd
-                if remote_account.balanceUsd > 0
-                else remote_account.equityUsd
-            ),
-            realizedPnlUsd=0.0,
+            startingEquityUsd=baseline,
+            # Equity change since the day's baseline, NOT a hardcoded zero.
+            # The daily loss limit compares this against its threshold, so
+            # pinning it to zero silently disabled the stop for every demo and
+            # live trade while leaving it working in the paper book.
+            # Equity rather than balance, so an open losing position counts:
+            # a loss limit that ignores drawdown until positions close is not
+            # protecting the account when it matters.
+            realizedPnlUsd=round(remote_account.equityUsd - baseline, 2),
             positions=active_symbols,
             currentEquityUsd=remote_account.equityUsd,
             availableMarginUsd=remote_account.availableMarginUsd,
         )
+
+    def _daily_baseline_equity_usd(self, remote_account) -> float:
+        """Account equity at the start of the current UTC trading day.
+
+        Re-baselining on date rollover is what makes the limit *daily*; without
+        it a single bad session would keep the bot halted indefinitely.
+        """
+        today = datetime.now(timezone.utc).date()
+        if self._dailyBaselineDate != today or self._dailyBaselineEquityUsd is None:
+            self._dailyBaselineDate = today
+            self._dailyBaselineEquityUsd = round(
+                remote_account.balanceUsd
+                if remote_account.balanceUsd > 0
+                else remote_account.equityUsd,
+                2,
+            )
+        return self._dailyBaselineEquityUsd
 
     def _apply_breakeven_rule(
         self,

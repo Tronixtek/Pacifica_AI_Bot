@@ -1,19 +1,32 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic.alias_generators import to_snake
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 
+def env_alias(field_name: str) -> str:
+    """camelCase field name -> UPPER_SNAKE environment variable name.
+
+    Deliberately not pydantic's `to_snake`: that helper treats a digit as a
+    word boundary, so `mt5Login` becomes `mt_5_login` and never matches the
+    documented `MT5_LOGIN` variable. Every MT5_* setting silently fell back to
+    its default because of it, which left the account sync disabled and the
+    login/server credentials unused. Splitting only on capitals keeps digits
+    attached to the token they belong to.
+    """
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", field_name).lower()
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        alias_generator=to_snake,
+        alias_generator=env_alias,
         populate_by_name=True,
         env_file=SERVICE_ROOT / ".env",
         env_file_encoding="utf-8",
@@ -40,6 +53,10 @@ class Settings(BaseSettings):
     symbols: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["EURUSD", "XAUUSD", "BTCUSD"]
     )
+    # Brokers append their own tag to instrument names (Exness uses "m",
+    # others ".raw"/"_i"). Leave blank to auto-detect from the majors the
+    # terminal exposes; set it explicitly to override detection.
+    symbolSuffix: str | None = None
     useSimulatedFeed: bool = True
     enableLiveTrading: bool = False
     pollIntervalSec: float = 2.0
@@ -54,13 +71,47 @@ class Settings(BaseSettings):
     maxOpenPositions: int = 3
     defaultLeverage: float = 3.0
     contrarianExecutionEnabled: bool = True
+    # Where to place the target once a signal has been flipped, as a multiple
+    # of the flipped risk. Using the original stop (the previous behaviour)
+    # puts the target roughly 0.43R away, which cuts winners off well before
+    # the move is done: spread costs a fixed 0.09R regardless of target, so a
+    # near target leaves nothing after costs. Measured across M5 and M15,
+    # expectancy improves monotonically out to ~2R.
+    # Set to 0 to restore the original "target = old stop" behaviour.
+    contrarianTargetRiskMultiple: float = 2.0
     signalCooldownSeconds: int = 45
+    # The strategy evaluates closed bars on this timeframe. Sampling the tick
+    # stream instead makes a "20-bar range" span 40 seconds, which is noise
+    # rather than price action once broker spread is taken into account.
+    strategyTimeframe: str = "5m"
+    strategyBarCount: int = 400
+    barRefreshIntervalSec: float = 15.0
+    # A signal is only worth acting on while the bar that produced it is still
+    # current. Beyond this fraction of one bar's duration past its close, price
+    # has moved on but the stop and target have not, so the trade would be
+    # taken on geometry that no longer matches the market.
+    maxBarAgeFraction: float = 0.5
+    # Reject an order when the live price has drifted this far from the price
+    # the signal was built at, measured as a fraction of the intended risk.
+    # Drift shrinks the reward and widens the risk without either being
+    # repriced, which is how a 0.60 reward-to-risk setup became 0.05 in live
+    # trading.
+    maxEntryDriftRiskFraction: float = 0.25
     priceActionBreakoutWindow: int = 20
     priceActionSweepWindow: int = 12
     priceActionTrendFastWindow: int = 8
     priceActionTrendSlowWindow: int = 34
     priceActionMomentumWindow: int = 5
-    priceActionBreakoutBuffer: float = 0.0016
+    # Thresholds are expressed in ATR rather than as a fraction of price, so a
+    # single setting behaves the same on EURUSD, USDJPY and XAUUSD. The old
+    # percentage form (0.0016 of price) demanded an ~18 pip break on EURUSD M5
+    # where ATR is under 5 pips, which suppressed breakouts almost entirely.
+    priceActionBreakoutAtrMultiple: float = 0.15
+    priceActionMinTrendSeparationAtr: float = 0.25
+    # Floor on stop distance. Without it the strategy emits stops as tight as
+    # the spread itself, which are stopped out at the moment of entry.
+    priceActionMinStopAtrMultiple: float = 0.6
+    priceActionMinStopSpreadMultiple: float = 3.0
     priceActionRewardToRisk: float = 2.1
     mlEnabled: bool = True
     mlCandleInterval: str = "1m"

@@ -44,6 +44,12 @@ from app.mt5.models import (
 )
 
 
+# Leverage assumed by the PAPER book only, for its margin estimate. Live
+# margin always comes from the broker via order_calc_margin. Set high
+# enough that the estimate does not block trades a retail forex account
+# (typically 30:1 to 2000:1) would comfortably accept.
+PAPER_MARGIN_LEVERAGE = 100.0
+
 PRICE_HISTORY_WINDOW = 180
 CHART_WINDOW_SIZE = 72
 SIGNAL_BUFFER_SIZE = 12
@@ -106,7 +112,8 @@ class _PaperRiskBook:
         used_margin = 0.0
         for position in self.positions.values():
             used_margin += (
-                abs(position.size * position.entryPrice * self.contractSizeOf(position.symbol)) / 3.0
+                abs(position.size * position.entryPrice * self.contractSizeOf(position.symbol))
+                / PAPER_MARGIN_LEVERAGE
             )
         return round(max(self.currentEquityUsd - used_margin, 0.0), 2)
 
@@ -223,7 +230,7 @@ class EngineRuntimeState:
         for symbol in symbols:
             if symbol in self.markets:
                 continue
-            baseline = baselines.get(symbol, 100.0)
+            baseline = self._baseline_for(symbol, baselines)
             self.markets[symbol] = SymbolState(
                 symbol=symbol,
                 baselinePrice=baseline,
@@ -232,6 +239,21 @@ class EngineRuntimeState:
                 updatedAt=datetime.now(timezone.utc),
             )
             self._seed_market_history(self.markets[symbol])
+
+    def _baseline_for(self, symbol: str, baselines: dict[str, float]) -> float:
+        """Seed price for a symbol, tolerating broker suffixes like EURUSDm.
+
+        Only matters until real quotes arrive, but seeding XAUUSDm at the 100.0
+        fallback instead of ~2350 would hand the strategy 180 samples of
+        fabricated history at the wrong order of magnitude.
+        """
+        upper = symbol.upper()
+        if upper in baselines:
+            return baselines[upper]
+        for canonical, price in baselines.items():
+            if upper.startswith(canonical):
+                return price
+        return 100.0
 
     def _seed_market_history(self, market: SymbolState) -> None:
         now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
@@ -321,6 +343,37 @@ class EngineRuntimeState:
                 low=round(min(open_price, price), 4),
                 close=round(price, 4),
             )
+        )
+
+    def apply_bars(self, symbol: str, bars: list) -> None:
+        """Replace a symbol's chart history with broker bars.
+
+        In demo/live mode the terminal is the source of truth for OHLC, so the
+        locally aggregated tick candles are discarded rather than merged: mixing
+        the two would produce a chart the strategy and the broker disagree on.
+        """
+        market = self.markets.get(symbol)
+        if market is None or not bars:
+            return
+
+        market.candles = deque(
+            (
+                ChartCandle(
+                    time=bar.time,
+                    open=bar.open,
+                    high=bar.high,
+                    low=bar.low,
+                    close=bar.close,
+                )
+                for bar in bars[-CHART_WINDOW_SIZE:]
+            ),
+            maxlen=CHART_WINDOW_SIZE,
+        )
+        # Keep the close series aligned with the bars the strategy just saw so
+        # anything still reading priceHistory (the ML layer) agrees with it.
+        market.priceHistory = deque(
+            (bar.close for bar in bars[-PRICE_HISTORY_WINDOW:]),
+            maxlen=PRICE_HISTORY_WINDOW,
         )
 
     def apply_market_specs(self, market_specs: dict[str, MarketSpec]) -> int:
@@ -1018,7 +1071,10 @@ class EngineRuntimeState:
     ) -> float:
         used_margin = 0.0
         for position in positions.values():
-            used_margin += self._position_value_usd(position.symbol, position.entryPrice, position.size) / 3.0
+            used_margin += (
+                self._position_value_usd(position.symbol, position.entryPrice, position.size)
+                / PAPER_MARGIN_LEVERAGE
+            )
         return round(max(equity_usd - used_margin, 0.0), 2)
 
     def _refresh_drawdown_tracking(self) -> None:
@@ -1455,7 +1511,10 @@ class PersistedOperatorState(BaseModel):
 
 
 class PersistedEngineState(BaseModel):
-    schemaVersion: int = 5
+    # 6: `size` on every persisted position changed from base-currency units
+    # to lots. Restoring a version-5 snapshot would misprice every open
+    # position by the contract size, so old snapshots are discarded.
+    schemaVersion: int = 6
     persistedAt: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     startingEquityUsd: float
     realizedPnlUsd: float

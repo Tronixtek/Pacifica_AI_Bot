@@ -90,6 +90,12 @@ class Mt5ExecutionService:
             )
 
         self._validate_execution_readiness()
+
+        drift_error = await self._reject_on_entry_drift(signal)
+        if drift_error is not None:
+            self.lastError = drift_error
+            return ExecutionResult(accepted=False, message=drift_error, payload=order_request)
+
         response = await self.client.send_market_order(order_request)
         retcode = response.get("retcode")
 
@@ -127,13 +133,15 @@ class Mt5ExecutionService:
                 f"No MT5 symbol spec available for {signal.symbol}. Is it selected in Market Watch?"
             )
 
-        volume = (
-            self._quantize_volume(signal.size, market_spec)
-            if signal.setup == "manual_test"
-            else self._compute_volume(signal, market_spec)
-        )
+        # `signal.size` is already lots: the risk layer sized it against the
+        # terminal's own profit calculation. Re-deriving volume from a notional
+        # value here would undo that and reintroduce the currency-conversion
+        # error on pairs whose profit currency is not the account currency.
+        volume = self._quantize_volume(signal.size, market_spec)
         if volume <= 0:
             raise RuntimeError(f"Computed MT5 volume for {signal.symbol} rounds down to zero lots.")
+
+        self._validate_stop_distance(signal, market_spec)
 
         return {
             "symbol": signal.symbol,
@@ -146,16 +154,64 @@ class Mt5ExecutionService:
             "comment": f"vtfx-{signal.id[:16]}",
         }
 
+    async def _reject_on_entry_drift(self, signal: StrategySignal) -> str | None:
+        """Refuse the trade if price has left the geometry the signal assumed.
+
+        Stop and target are fixed at the signal's entry price, but a market
+        order fills at whatever the market is doing now. When price drifts, the
+        levels do not follow: the reward shrinks and the risk widens, silently
+        changing a trade the risk layer already approved. Observed live, 26
+        points of drift on a 30 point reward turned a 0.60 reward-to-risk setup
+        into 0.05.
+
+        Returns an error message when the trade should be abandoned, else None.
+        """
+        risk = abs(signal.entryPrice - signal.stopLoss)
+        if risk <= 0:
+            return None
+
+        quote = await self.client.symbol_info_tick(signal.symbol)
+        if quote is None:
+            return f"No live price for {signal.symbol}; refusing to submit blind."
+
+        # Compare against the side actually paid: ask to buy, bid to sell.
+        live = (quote.askPrice if signal.bias == "long" else quote.bidPrice) or quote.markPrice
+        drift = abs(live - signal.entryPrice)
+        budget = risk * self.settings.maxEntryDriftRiskFraction
+        if drift <= budget:
+            return None
+
+        return (
+            f"{signal.symbol} price moved {drift / risk:.0%} of the intended risk "
+            f"({signal.entryPrice} -> {live}) before execution, past the "
+            f"{self.settings.maxEntryDriftRiskFraction:.0%} limit. Trade abandoned "
+            "rather than taken on degraded stop/target geometry."
+        )
+
+    def _validate_stop_distance(self, signal: StrategySignal, market_spec: MarketSpec) -> None:
+        """Reject stops or targets closer than the broker permits.
+
+        Deliberately a rejection rather than a nudge outward: widening the stop
+        silently increases the loss the position can take beyond what the risk
+        layer sized for, which is worse than not trading.
+        """
+        if market_spec.stopsLevel <= 0 or market_spec.tickSize <= 0:
+            return
+
+        minimum = market_spec.stopsLevel * market_spec.tickSize
+        for label, level in (("stop loss", signal.stopLoss), ("take profit", signal.takeProfit)):
+            if not level:
+                continue
+            distance = abs(signal.entryPrice - level)
+            if distance < minimum:
+                raise RuntimeError(
+                    f"{signal.symbol} {label} is {distance / market_spec.tickSize:.0f} points from "
+                    f"entry, inside the broker minimum of {market_spec.stopsLevel} points."
+                )
+
     def health(self) -> ServiceHealth:
         status, message = self._readiness_status()
         return ServiceHealth(id="execution", label="Execution", status=status, message=message)
-
-    def _compute_volume(self, signal: StrategySignal, market_spec: MarketSpec) -> float:
-        if market_spec.tickValue <= 0 or signal.entryPrice <= 0:
-            return 0.0
-        implied_units = signal.notionalUsd / signal.entryPrice
-        raw_volume = implied_units * (market_spec.tickSize / market_spec.tickValue)
-        return self._quantize_volume(raw_volume, market_spec)
 
     def _quantize_volume(self, volume: float, market_spec: MarketSpec) -> float:
         step = market_spec.volumeStep or 0.01
