@@ -113,6 +113,23 @@ class Settings(BaseSettings):
     priceActionMinStopAtrMultiple: float = 0.6
     priceActionMinStopSpreadMultiple: float = 3.0
     priceActionRewardToRisk: float = 2.1
+    # Which setups may produce signals. Measured on Exness M15 with the 2.0R
+    # target: breakout is +0.077R and positive in both halves of the sample,
+    # while liquidity_sweep is -0.027R and reverses out-of-sample (+0.017 to
+    # -0.074). Inverting a sweep means betting a rejection fails, which is the
+    # opposite of what the sweep is evidence for.
+    enabledSetups: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["breakout"]
+    )
+
+    @field_validator("enabledSetups", mode="before")
+    @classmethod
+    def parse_enabled_setups(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, list):
+            return [item.strip().lower() for item in value if item]
+        if not value:
+            return ["breakout"]
+        return [item.strip().lower() for item in value.split(",") if item.strip()]
     mlEnabled: bool = True
     mlCandleInterval: str = "1m"
     mlTrainingLookbackCandles: int = 720

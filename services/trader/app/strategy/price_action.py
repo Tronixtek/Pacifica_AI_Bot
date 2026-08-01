@@ -47,6 +47,7 @@ class PriceActionStrategy:
         min_stop_atr_multiple: float = 0.6,
         min_stop_spread_multiple: float = 3.0,
         reward_to_risk: float = 2.1,
+        enabled_setups: list[str] | None = None,
     ) -> None:
         self.breakout_window = breakout_window
         self.sweep_window = sweep_window
@@ -58,6 +59,10 @@ class PriceActionStrategy:
         self.min_stop_atr_multiple = min_stop_atr_multiple
         self.min_stop_spread_multiple = min_stop_spread_multiple
         self.reward_to_risk = reward_to_risk
+        # None means every setup; the engine passes the configured subset.
+        self.enabled_setups = (
+            {name.lower() for name in enabled_setups} if enabled_setups else None
+        )
         # Sweeps are counter-trend by nature, so the trend filter only blocks
         # them when the prevailing trend is strongly against the setup.
         self.max_counter_trend_atr = max(min_trend_separation_atr * 6, 1.5)
@@ -109,10 +114,16 @@ class PriceActionStrategy:
         candidates.extend(self._sweeps(symbol, current, bars, atr, trend_separation))
 
         return sorted(
-            (c for c in candidates if self._has_workable_stop(c, current, atr)),
+            (
+                c for c in candidates
+                if self._setup_enabled(c.setup) and self._has_workable_stop(c, current, atr)
+            ),
             key=lambda item: item.confidence,
             reverse=True,
         )
+
+    def _setup_enabled(self, setup: str) -> bool:
+        return self.enabled_setups is None or setup.lower() in self.enabled_setups
 
     def _has_workable_stop(self, candidate: StrategyCandidate, current: Bar, atr: float) -> bool:
         """Reject setups whose stop is too tight to survive normal noise.

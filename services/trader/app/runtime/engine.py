@@ -68,6 +68,7 @@ class TradingEngine:
             min_stop_atr_multiple=settings.priceActionMinStopAtrMultiple,
             min_stop_spread_multiple=settings.priceActionMinStopSpreadMultiple,
             reward_to_risk=settings.priceActionRewardToRisk,
+            enabled_setups=settings.enabledSetups,
         )
         self.mlModel = MlSignalModel(settings, self.client)
         self.audit = AuditLogger(settings)
