@@ -26,3 +26,13 @@ data/
 services/trader/data/
 services/trader/models/
 services/trader/logs/
+
+# Credentials and keys. A cloud keypair dropped into the repo root is one
+# `git add -A` away from a public commit, and rotating an exposed EC2 key
+# means rebuilding access to the instance.
+*.pem
+*.ppk
+*.key
+*.p12
+*.pfx
+id_rsa*
