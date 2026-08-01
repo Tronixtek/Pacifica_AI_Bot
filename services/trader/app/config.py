@@ -154,6 +154,28 @@ class Settings(BaseSettings):
     mlDatasetRoot: Path = Path("data/training")
     mlLoadArtifactOnStartup: bool = True
     mlModelArtifactPath: Path = Path("models/ml_signal_model.json")
+    # --- fixed-cash-target scalper (python -m app.scalper) ----------------
+    # Separate from the main strategy. Takes a small fixed profit against a
+    # much larger fixed loss, which produces a high win rate and a rare large
+    # loss. Judge it on realised P/L, never on the win rate: with a 0.20
+    # target, 4.00 stop and 0.10 of spread, break-even is about 97%.
+    scalperSymbol: str = "GBPUSD"
+    scalperTargetUsd: float = 0.20
+    scalperStopUsd: float = 4.00
+    scalperLots: float = 0.0            # 0 = the broker minimum
+    scalperSide: Literal["buy", "sell", "alternate"] = "alternate"
+    scalperMaxOpenPositions: int = 3
+    scalperPollSec: float = 2.0
+    # Distinct from mt5MagicNumber so the main bot's account view, which
+    # filters by magic, never counts these positions as its own.
+    scalperMagicNumber: int = 990_212
+    # Hard limits. This payoff shape loses in rare large steps, so these are
+    # the only thing between a bad hour and an empty account.
+    scalperEquityFloorUsd: float = 0.0   # 0 = disabled
+    scalperMaxDrawdownUsd: float = 25.0
+    scalperMaxConsecutiveLosses: int = 5
+    scalperMaxTrades: int = 0            # 0 = unlimited
+
     persistRuntimeState: bool = True
     stateStorePath: Path = Path("data/state/runtime.sqlite3")
     stateCheckpointIntervalSec: float = 5.0
