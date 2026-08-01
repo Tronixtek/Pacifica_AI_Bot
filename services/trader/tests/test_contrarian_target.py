@@ -14,6 +14,8 @@ from app.strategy.price_action import StrategyCandidate
 
 
 def _engine(**overrides):
+    # Trailing replaces the fixed target entirely, so these tests pin it off.
+    overrides.setdefault("trailingStopEnabled", False)
     return TradingEngine(Settings(_env_file=None, **overrides))
 
 

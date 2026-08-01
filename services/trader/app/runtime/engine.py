@@ -25,7 +25,7 @@ from app.contracts import (
     SystemStatus,
 )
 from app.core.audit import AuditLogger
-from app.mt5.client import Mt5Client
+from app.mt5.client import TRADE_RETCODE_DONE, Mt5Client
 from app.mt5.execution import Mt5ExecutionService
 from app.mt5.market_data import Mt5MarketDataService
 from app.mt5.models import (
@@ -35,6 +35,7 @@ from app.mt5.models import (
     RemoteTradingSnapshot,
 )
 from app.risk.manager import RiskManager
+from app.risk.trailing import TrailingStop
 from app.runtime.persistence import RuntimeStateStore
 from app.runtime.state import ComparisonPaperPosition, EngineRuntimeState, SymbolState
 from app.strategy.ml_model import MlAssessment, MlSignalModel
@@ -73,6 +74,10 @@ class TradingEngine:
         self.mlModel = MlSignalModel(settings, self.client)
         self.audit = AuditLogger(settings)
         self.risk = RiskManager(settings, self.client)
+        self.trailing = TrailingStop(
+            activate_r=settings.trailActivateR,
+            trail_atr_multiple=settings.trailAtrMultiple,
+        )
         self.stateStore = RuntimeStateStore(settings)
         self._task: asyncio.Task[None] | None = None
         self._running = False
@@ -85,6 +90,9 @@ class TradingEngine:
         self._lastCheckpointAt: datetime | None = None
         self._dailyBaselineEquityUsd: float | None = None
         self._dailyBaselineDate = None
+        # Entry stop per ticket, so the trail measures advance against the
+        # original risk rather than against an already-trailed stop.
+        self._initialStopBySymbol: dict[int, float] = {}
 
     async def start(self) -> None:
         restored = self._restore_runtime_state()
@@ -778,10 +786,16 @@ class TradingEngine:
             self._handle_positions(market)
 
         closed_bars = await self.marketData.refresh_bars(self.engineSymbols)
-        if closed_bars and not self._paused:
-            for symbol, bars in closed_bars.items():
-                self.state.apply_bars(symbol, bars)
-                await self._scan_bars(symbol, bars)
+        if closed_bars:
+            # Trailing runs on bar closes, matching how it was measured. A
+            # trail driven by the 2s poll would tighten mid-bar and be taken
+            # out by the same bar's retrace, which the backtest never sees and
+            # would make live results systematically worse than modelled.
+            await self._trail_live_stops(closed_bars)
+            if not self._paused:
+                for symbol, bars in closed_bars.items():
+                    self.state.apply_bars(symbol, bars)
+                    await self._scan_bars(symbol, bars)
 
         await self._sync_remote_account_if_due()
         self._checkpoint_state()
@@ -830,6 +844,94 @@ class TradingEngine:
             spread_bps=next_spread,
             observed_at=datetime.now(timezone.utc),
         )
+
+    async def _trail_live_stops(self, closed_bars: dict[str, list[Bar]]) -> None:
+        """Ratchet stops on open MT5 positions behind the best price reached.
+
+        The best price is rebuilt from the bars since entry rather than kept in
+        memory, so a restart does not reset the trail and hand back profit the
+        position had already locked in.
+        """
+        if not (self.settings.trailingStopEnabled and self.settings.enableLiveTrading):
+            return
+
+        snapshot = self.state.remoteSnapshot
+        if snapshot is None or not snapshot.positions:
+            return
+
+        for position in snapshot.positions:
+            bars = closed_bars.get(position.symbol)
+            if not bars or position.openedAt is None or not position.stopLoss:
+                continue
+
+            since_entry = [bar for bar in bars if bar.time >= position.openedAt]
+            if not since_entry:
+                continue
+
+            best = (
+                max(bar.high for bar in since_entry)
+                if position.side == "long"
+                else min(bar.low for bar in since_entry)
+            )
+
+            atr = self._atr_for(position.symbol, bars)
+            initial = self._initialStopBySymbol.get(position.ticket, position.stopLoss)
+            self._initialStopBySymbol.setdefault(position.ticket, position.stopLoss)
+
+            decision = self.trailing.evaluate(
+                side=position.side,
+                entry_price=position.entryPrice,
+                initial_stop=initial,
+                current_stop=position.stopLoss,
+                best_price=best,
+                atr=atr,
+            )
+            if not decision.shouldMove:
+                continue
+
+            spec = self.marketData.marketSpecs.get(position.symbol)
+            new_stop = round(decision.stopLoss, spec.digits) if spec else decision.stopLoss
+            if new_stop == position.stopLoss:
+                continue
+
+            result = await self.client.modify_position_stops(
+                ticket=position.ticket,
+                symbol=position.symbol,
+                stop_loss=new_stop,
+                take_profit=position.takeProfit,
+            )
+            if result.get("retcode") == TRADE_RETCODE_DONE:
+                self.state.add_event(
+                    "info",
+                    (
+                        f"{position.symbol} stop trailed {position.stopLoss} -> {new_stop}. "
+                        f"{decision.reason}"
+                    ),
+                )
+                self.audit.write(
+                    event_type="execution",
+                    action="position.trail_stop",
+                    status="success",
+                    details={
+                        "ticket": position.ticket,
+                        "symbol": position.symbol,
+                        "from": position.stopLoss,
+                        "to": new_stop,
+                    },
+                )
+            else:
+                self._emit_notice(
+                    key=f"trail-failed-{position.symbol}",
+                    level="warning",
+                    message=(
+                        f"Could not trail the {position.symbol} stop: "
+                        f"{result.get('comment') or result.get('error')}"
+                    ),
+                    cooldown_seconds=300,
+                )
+
+    def _atr_for(self, symbol: str, bars: list[Bar]) -> float:
+        return self.strategy._atr(bars, 14) if len(bars) > 15 else 0.0
 
     async def _scan_market(self, market: SymbolState) -> None:
         """Simulated-feed scanning: aggregate the tick sim into bars first.
@@ -1474,6 +1576,21 @@ class TradingEngine:
         """
         multiple = self.settings.contrarianTargetRiskMultiple
         risk = abs(candidate.entryPrice - stop_loss)
+        if self.settings.trailingStopEnabled and risk > 0:
+            # A fixed target would cap the winner at `multiple`R, which is the
+            # exact thing trailing exists to avoid. The level below is far
+            # enough never to bind in practice (winners average well under 1R)
+            # but keeps a broker-side backstop if this process dies mid-trade.
+            backstop = 20.0
+            take_profit = (
+                candidate.entryPrice + risk * backstop
+                if executed_bias == "long"
+                else candidate.entryPrice - risk * backstop
+            )
+            return take_profit, (
+                f"Exit is a trailing stop armed at {self.settings.trailActivateR:.2f}R, "
+                f"trailing {self.settings.trailAtrMultiple:.2f} ATR."
+            )
         if multiple <= 0 or risk <= 0:
             return candidate.stopLoss, "Original stop is now take profit."
 

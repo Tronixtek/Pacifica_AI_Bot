@@ -374,6 +374,40 @@ class Mt5Client:
 
         return []
 
+    async def modify_position_stops(
+        self,
+        ticket: int,
+        symbol: str,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+    ) -> dict[str, Any]:
+        """Move the stop or target on an already-open position.
+
+        MT5 carries stops on the position itself, so trailing means asking the
+        server to amend it - the stop stays broker-side and survives this
+        process dying. Omitting a level clears it, which is why both are always
+        sent explicitly.
+        """
+        if not MT5_AVAILABLE:
+            return {"retcode": None, "error": "MetaTrader5 package is not available."}
+
+        request: dict[str, Any] = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": ticket,
+            "symbol": symbol,
+            "sl": stop_loss or 0.0,
+            "tp": take_profit or 0.0,
+        }
+        result = await self._call(mt5.order_send, request)
+        if result is None:
+            error = await self._call(mt5.last_error)
+            return {"retcode": None, "error": str(error), "request": request}
+        return {
+            "retcode": result.retcode,
+            "comment": result.comment,
+            "request": request,
+        }
+
     async def get_recent_candles(
         self,
         symbol: str,

@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     # expectancy improves monotonically out to ~2R.
     # Set to 0 to restore the original "target = old stop" behaviour.
     contrarianTargetRiskMultiple: float = 2.0
+    # Trailing exit. When enabled the fixed take-profit is dropped and the
+    # trade exits on the trailed stop instead, so a move that keeps running
+    # keeps paying. Measured on Exness M15 (breakout only): a fixed 0.25R
+    # target gives 81.1% wins at -0.018R, while arming at 0.25R and trailing
+    # 0.5 ATR gives 80.3% wins at +0.029R, stable across both halves.
+    trailingStopEnabled: bool = True
+    trailActivateR: float = 0.25
+    trailAtrMultiple: float = 0.5
     signalCooldownSeconds: int = 45
     # The strategy evaluates closed bars on this timeframe. Sampling the tick
     # stream instead makes a "20-bar range" span 40 seconds, which is noise
