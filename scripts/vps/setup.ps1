@@ -38,20 +38,81 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 
 # --- prerequisites --------------------------------------------------------
 Step "Checking prerequisites"
-if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    Warn "winget not found. Install Python 3.11+ and Git manually, then re-run."
+
+function Update-PathFromRegistry {
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                [Environment]::GetEnvironmentVariable("Path", "User")
 }
 
-foreach ($pkg in @(@{id="Python.Python.3.12"; cmd="python"}, @{id="Git.Git"; cmd="git"})) {
-    if (Get-Command $pkg.cmd -ErrorAction SilentlyContinue) {
-        Ok "$($pkg.cmd) already present"
-    } else {
-        Step "Installing $($pkg.id)"
-        winget install --id $pkg.id --silent --accept-package-agreements --accept-source-agreements
-        $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                    [Environment]::GetEnvironmentVariable("Path", "User")
+function Test-RealPython {
+    <#
+      Windows ships an App Execution Alias at
+      %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe. It sits on PATH and
+      satisfies Get-Command, but it is only a stub that redirects to the
+      Microsoft Store: running it prints "Python was not found" and creates
+      nothing. Only a real interpreter answers --version with a version.
+    #>
+    param([string]$Exe)
+    if (-not $Exe) { return $false }
+    try {
+        $out = & $Exe --version 2>&1 | Out-String
+        return ($LASTEXITCODE -eq 0 -and $out -match "Python\s+3\.(1[1-9]|[2-9][0-9])")
+    } catch {
+        return $false
     }
 }
+
+function Resolve-Python {
+    # The py launcher is tried first: it ships with the official distribution,
+    # is never shadowed by the Store alias, and knows where real interpreters
+    # are installed.
+    $candidates = @()
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        $found = & py -3 -c "import sys; print(sys.executable)" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $found) { $candidates += $found.Trim() }
+    }
+    $candidates += (Get-Command python -All -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Source -and $_.Source -notlike "*\WindowsApps\*" } |
+                    Select-Object -ExpandProperty Source)
+    $candidates += Get-ChildItem -Path @(
+        "$env:LOCALAPPDATA\Programs\Python",
+        "$env:ProgramFiles\Python*",
+        "C:\Python*"
+    ) -Filter python.exe -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty FullName
+
+    foreach ($c in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
+        if (Test-RealPython $c) { return $c }
+    }
+    return $null
+}
+
+$pythonExe = Resolve-Python
+if ($pythonExe) {
+    Ok "Python found: $pythonExe ($(& $pythonExe --version 2>&1))"
+} else {
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        throw "No usable Python 3.11+ and winget is unavailable. Install Python from python.org, tick 'Add python.exe to PATH', then re-run."
+    }
+    Step "Installing Python 3.12"
+    winget install --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+    Update-PathFromRegistry
+    $pythonExe = Resolve-Python
+    if (-not $pythonExe) {
+        throw "Python installed but could not be located. Close this window, open a NEW elevated PowerShell, and re-run."
+    }
+    Ok "Python installed: $pythonExe"
+}
+
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Step "Installing Git"
+    winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements
+    Update-PathFromRegistry
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw "Git installed but is not on PATH. Open a NEW elevated PowerShell and re-run."
+    }
+}
+Ok "git present"
 
 # --- repo -----------------------------------------------------------------
 Step "Fetching the repository"
@@ -73,8 +134,13 @@ $traderDir = Join-Path $repoRoot "services\trader"
 $python = Join-Path $traderDir ".venv\Scripts\python.exe"
 if (-not (Test-Path $python)) {
     Push-Location $traderDir
-    python -m venv .venv
+    # Use the resolved interpreter, not whatever `python` happens to mean on
+    # PATH - that is how the Store stub got in here in the first place.
+    & $pythonExe -m venv .venv
     Pop-Location
+}
+if (-not (Test-Path $python)) {
+    throw "venv creation failed - no interpreter at $python"
 }
 & $python -m pip install --upgrade pip --quiet
 & $python -m pip install -r (Join-Path $traderDir "requirements.txt") --quiet
