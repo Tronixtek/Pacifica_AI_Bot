@@ -120,3 +120,33 @@ authentication**, and it can place trades.
 - `-EnableAutoLogon` stores the password in plaintext in the registry. That is the
   trade for unattended restarts; treat the box as compromised-if-accessed.
 - The bot API has no auth. Keep it on `127.0.0.1`.
+
+## Troubleshooting
+
+**`The argument ... to the -File parameter does not exist`**
+The clone fetched the default branch, which does not contain `scripts/vps`.
+Clone with `--branch mt5-forex-hardening`.
+
+**`Python was not found; run without arguments to install from the Microsoft Store`**
+`python` on PATH is the Windows App Execution Alias stub, not an interpreter.
+The setup script detects and skips it, but if you hit this running Python by
+hand, use the `py` launcher or the full path under
+`%LOCALAPPDATA%\Programs\Python`.
+
+**`0x8a15005e : The server certificate did not match any of the expected values`**
+winget probed the `msstore` source, which is not usable on Windows Server.
+Pin the source:
+
+```powershell
+winget install --id Python.Python.3.12 --source winget --silent `
+    --accept-package-agreements --accept-source-agreements
+```
+
+**A tool installs but is still "not found"**
+PATH is read once when a shell starts. Close the window, open a new elevated
+PowerShell, and re-run.
+
+**`retcode 10027` on every order**
+Algorithmic trading is off in the terminal. Enable it in
+Tools > Options > Expert Advisors, not the toolbar button - the toolbar toggle
+resets on restart.

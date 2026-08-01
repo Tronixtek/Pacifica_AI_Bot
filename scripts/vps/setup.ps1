@@ -94,8 +94,11 @@ if ($pythonExe) {
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         throw "No usable Python 3.11+ and winget is unavailable. Install Python from python.org, tick 'Add python.exe to PATH', then re-run."
     }
+    # --source winget is required: on Windows Server the msstore source is
+    # not usable and fails certificate validation, which aborts the whole
+    # install even though the package exists in the community source.
     Step "Installing Python 3.12"
-    winget install --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+    winget install --id Python.Python.3.12 --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
     Update-PathFromRegistry
     $pythonExe = Resolve-Python
     if (-not $pythonExe) {
@@ -106,7 +109,7 @@ if ($pythonExe) {
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Step "Installing Git"
-    winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements
+    winget install --id Git.Git --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
     Update-PathFromRegistry
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         throw "Git installed but is not on PATH. Open a NEW elevated PowerShell and re-run."
