@@ -31,16 +31,16 @@ def test_mt5_env_vars_actually_bind(monkeypatch):
     These previously resolved to `mt_5_*` aliases, so every one of them was
     ignored and `_mt5_configured()` stayed False, disabling account sync.
     """
-    monkeypatch.setenv("MT5_LOGIN", "476096391")
-    monkeypatch.setenv("MT5_SERVER", "Exness-MT5Trial9")
+    monkeypatch.setenv("MT5_LOGIN", "12345678")
+    monkeypatch.setenv("MT5_SERVER", "Broker-Demo01")
     monkeypatch.setenv("MT5_PASSWORD", "secret")
     monkeypatch.setenv("MT5_MAGIC_NUMBER", "12345")
     monkeypatch.setenv("MT5_DEVIATION_POINTS", "30")
 
     settings = Settings(_env_file=None)
 
-    assert settings.mt5Login == 476096391
-    assert settings.mt5Server == "Exness-MT5Trial9"
+    assert settings.mt5Login == 12345678
+    assert settings.mt5Server == "Broker-Demo01"
     assert settings.mt5Password == "secret"
     assert settings.mt5MagicNumber == 12345
     assert settings.mt5DeviationPoints == 30

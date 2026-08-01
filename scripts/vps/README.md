@@ -28,7 +28,7 @@ In an **elevated** PowerShell on the VPS:
 
 ```powershell
 cd C:\
-git clone https://github.com/Tronixtek/Pacifica_AI_Bot.git temp-setup
+git clone --branch mt5-forex-hardening https://github.com/Tronixtek/Pacifica_AI_Bot.git temp-setup
 powershell -ExecutionPolicy Bypass -File C:\temp-setup\scripts\vps\setup.ps1 `
     -Branch mt5-forex-hardening `
     -EnableAutoLogon -AutoLogonUser "Administrator" -AutoLogonPassword "<your-password>"
