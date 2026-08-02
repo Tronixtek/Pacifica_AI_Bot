@@ -113,6 +113,16 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
     -Settings $settings -Principal $principal | Out-Null
 Ok "Task updated to bind $tsIp"
 
+# enable-remote-access.ps1 adds a blanket Block on this port. Windows Firewall
+# gives Block precedence over Allow, so leaving it in place silently defeats
+# the tailnet rule below and the phone just times out. Drop it: the socket is
+# bound to the Tailscale address rather than 0.0.0.0, so the public interface
+# cannot reach it regardless of any rule.
+if (Get-NetFirewallRule -Name "vtfx-api-block" -ErrorAction SilentlyContinue) {
+    Remove-NetFirewallRule -Name "vtfx-api-block"
+    Ok "Removed the blanket block on $Port (it would override the tailnet rule)"
+}
+
 # Allow the port on the Tailscale interface only.
 Remove-NetFirewallRule -Name "vtfx-api-tailscale" -ErrorAction SilentlyContinue
 New-NetFirewallRule -Name "vtfx-api-tailscale" -DisplayName "VTFX dashboard (Tailscale)" `

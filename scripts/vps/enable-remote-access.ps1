@@ -62,13 +62,17 @@ if ($AllowFromIp) {
     Warn "Re-run with -AllowFromIp <your.ip> to narrow it."
 }
 
-# The trading port must never be reachable from outside. An explicit block
-# rule guards against a later change to the security group or the bind address.
+# The trading port must never be reachable from outside. Blocked everywhere
+# except the Tailscale range: Windows Firewall gives Block precedence over
+# Allow, so a blanket block here would silently defeat enable-phone-access.ps1
+# and the phone would simply time out with nothing explaining why.
 Step "Blocking the trading port at the edge"
 Remove-NetFirewallRule -Name "vtfx-api-block" -ErrorAction SilentlyContinue
 New-NetFirewallRule -Name "vtfx-api-block" -DisplayName "Block VTFX API from network" `
-    -Enabled True -Direction Inbound -Protocol TCP -LocalPort $Port -Action Block | Out-Null
-Ok "Inbound $Port blocked; reachable only through the tunnel"
+    -Enabled True -Direction Inbound -Protocol TCP -LocalPort $Port `
+    -RemoteAddress "0.0.0.0-100.63.255.255", "100.128.0.0-255.255.255.255" `
+    -Action Block | Out-Null
+Ok "Inbound $Port blocked except from the tailnet (100.64.0.0/10)"
 
 if ($DisablePasswordAuth) {
     Step "Disabling password authentication"
