@@ -13,6 +13,14 @@ MUTATING_PREFIXES = ("/api/operator",)
 # route added later is covered without anyone remembering to update this.
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# Narrow exceptions: mutating routes that remain available in read-only mode.
+# Pausing a bot only ever REDUCES what it can do - it stops new positions and
+# cannot open one - so refusing it would mean the dashboard could show a bot
+# losing money without offering the one control that helps. Order submission
+# stays blocked.
+ALWAYS_ALLOWED_SUFFIXES = ("/pause", "/resume")
+ALWAYS_ALLOWED_PREFIX = "/api/bots/"
+
 
 class ReadOnlyApiMiddleware(BaseHTTPMiddleware):
     """Refuse anything that could trade when the API is exposed for viewing.
@@ -36,6 +44,10 @@ class ReadOnlyApiMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path
+
+        if path.startswith(ALWAYS_ALLOWED_PREFIX) and path.endswith(ALWAYS_ALLOWED_SUFFIXES):
+            return await call_next(request)
+
         mutating_path = any(path.startswith(p) for p in MUTATING_PREFIXES)
         unsafe_method = request.method.upper() not in SAFE_METHODS
 

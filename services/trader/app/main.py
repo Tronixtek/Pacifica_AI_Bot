@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     # The extra bots start only after the main engine has resolved broker
     # symbol names and loaded specs, and they reuse both. Resolving twice would
     # risk them trading a different instrument than the dashboard reports.
-    fleet = BotFleet(settings, engine.client)
+    fleet = BotFleet(settings, engine.client, engine=engine)
     app.state.fleet = fleet
     if not settings.useSimulatedFeed:
         await fleet.start(engine.engineSymbols, engine.marketData.marketSpecs)

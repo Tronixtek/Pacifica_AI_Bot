@@ -60,6 +60,7 @@ class CrtEngine:
         self.tracked: dict[int, TrackedTrade] = {}
         self._lastCandleTime: dict[str, datetime] = {}
         self.running = False
+        self.paused = False
 
     def note(self, message: str) -> None:
         stamped = f"{datetime.now(timezone.utc):%H:%M:%S} [crt] {message}"
@@ -106,6 +107,10 @@ class CrtEngine:
                 del self.tracked[ticket]
 
     async def _scan(self, symbol: str) -> None:
+        # Paused blocks new entries only; _trail() still runs, so open
+        # positions keep being managed.
+        if self.paused:
+            return
         if len(self.tracked) >= self.settings.crtMaxOpenPositions:
             return
         spec = self.specs.get(symbol)

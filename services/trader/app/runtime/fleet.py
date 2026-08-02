@@ -21,9 +21,13 @@ class BotFleet:
     positions, limits and results separable on a shared account.
     """
 
-    def __init__(self, settings: Settings, client: Mt5Client) -> None:
+    def __init__(self, settings: Settings, client: Mt5Client, engine=None) -> None:
         self.settings = settings
         self.client = client
+        # The price-action engine is owned by the app, not the fleet, but the
+        # dashboard treats all three alike - so the fleet needs a handle to
+        # pause it too.
+        self.engine = engine
         self.scalper: ScalperEngine | None = None
         self.crt: CrtEngine | None = None
         self._tasks: list[asyncio.Task] = []
@@ -110,6 +114,43 @@ class BotFleet:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+
+    def _engine_for(self, bot_id: str):
+        """The object holding the pause flag for a bot id, or None."""
+        return {
+            "price_action": self.engine,
+            "scalper": self.scalper,
+            "crt": self.crt,
+        }.get(bot_id)
+
+    def is_paused(self, bot_id: str) -> bool:
+        target = self._engine_for(bot_id)
+        if target is None:
+            return False
+        # The price-action engine spells it _paused; the others paused.
+        return bool(getattr(target, "paused", getattr(target, "_paused", False)))
+
+    def set_paused(self, bot_id: str, paused: bool) -> tuple[bool, str]:
+        """Pause or resume one bot. Returns (ok, message).
+
+        Pausing stops NEW positions only. Anything already open keeps its
+        broker-side stop and continues to be trailed and banked: dropping
+        management of live risk is not what an operator means by "pause".
+        """
+        target = self._engine_for(bot_id)
+        if target is None:
+            return False, f"No bot called {bot_id!r} is running."
+
+        if hasattr(target, "paused"):
+            target.paused = paused
+        else:
+            target._paused = paused
+
+        word = "paused" if paused else "resumed"
+        return True, (
+            f"{bot_id} {word}."
+            + (" Open positions keep their stops and are still managed." if paused else "")
+        )
 
     async def performance(self) -> list[BotPerformance]:
         """Realised and open results per bot, read from the account itself.

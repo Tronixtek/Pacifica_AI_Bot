@@ -50,6 +50,7 @@ class ScalperEngine:
         self.symbol: str = ""
         self.spec: MarketSpec | None = None
         self.running = False
+        self.paused = False
         self.haltReason: str | None = None
         self._nextSide = settings.scalperSide if settings.scalperSide in ("buy", "sell") else "buy"
         self._log: list[str] = []
@@ -185,7 +186,11 @@ class ScalperEngine:
 
             await self._trail_open_positions()
 
-            while self.running and len(open_tickets) < self.settings.scalperMaxOpenPositions:
+            # Paused stops NEW positions only. Open ones keep their
+            # broker-side stops and are still trailed and banked - abandoning
+            # live risk is not what "pause" should mean.
+            while (self.running and not self.paused
+                   and len(open_tickets) < self.settings.scalperMaxOpenPositions):
                 ticket = await self._open_position()
                 if ticket is None:
                     break

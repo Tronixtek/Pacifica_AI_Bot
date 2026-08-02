@@ -25,6 +25,8 @@ type Bot = {
   worstUsd: number;
   symbols: string[];
   lastTradeAt: string | null;
+  paused: boolean;
+  canPause: boolean;
 };
 
 type Fleet = {
@@ -48,6 +50,36 @@ function toneOf(v: number) {
 export function BotPerformanceBoard() {
   const [fleet, setFleet] = useState<Fleet | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const toggle = async (bot: Bot) => {
+    setBusy(bot.botId);
+    try {
+      const action = bot.paused ? "resume" : "pause";
+      const res = await fetch(`${API}/api/bots/${bot.botId}/${action}`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      setNotice(data.message ?? null);
+      // Reflect the new state immediately rather than waiting for the poll,
+      // so the button does not appear to do nothing for up to five seconds.
+      setFleet((f) =>
+        f
+          ? {
+              ...f,
+              bots: f.bots.map((b) =>
+                b.botId === bot.botId ? { ...b, paused: data.paused } : b
+              ),
+            }
+          : f
+      );
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -105,6 +137,12 @@ export function BotPerformanceBoard() {
 
       {!fleet && !error && <div className="err">Loading…</div>}
 
+      {notice && (
+        <div className="notice" onClick={() => setNotice(null)}>
+          {notice}
+        </div>
+      )}
+
       <div className="grid">
         {fleet?.bots.map((bot) => (
           <section key={bot.botId} className={`card ${toneOf(bot.equityImpactUsd)}`}>
@@ -112,6 +150,12 @@ export function BotPerformanceBoard() {
               <h2>{bot.label}</h2>
               <span className="magic">#{bot.magicNumber}</span>
             </div>
+
+            {bot.paused && (
+              <div className="paused-flag">
+                Paused &mdash; no new trades. Open positions still managed.
+              </div>
+            )}
 
             <div className={`headline ${toneOf(bot.equityImpactUsd)}`}>
               {money(bot.equityImpactUsd)}
@@ -158,7 +202,22 @@ export function BotPerformanceBoard() {
             </dl>
 
             <footer className="card-foot">
-              {bot.symbols.length > 0 ? bot.symbols.join(" · ") : "no trades yet"}
+              <span>
+                {bot.symbols.length > 0 ? bot.symbols.join(" · ") : "no trades yet"}
+              </span>
+              {bot.canPause && (
+                <button
+                  className={bot.paused ? "btn resume" : "btn pause"}
+                  onClick={() => toggle(bot)}
+                  disabled={busy === bot.botId}
+                >
+                  {busy === bot.botId
+                    ? "…"
+                    : bot.paused
+                    ? "Resume"
+                    : "Stop"}
+                </button>
+              )}
             </footer>
           </section>
         ))}
@@ -189,6 +248,7 @@ export function BotPerformanceBoard() {
                 padding: 20px; display: flex; flex-direction: column; gap: 4px; }
         .card.pos { border-color: rgba(38,166,110,0.45); }
         .card.neg { border-color: rgba(220,70,70,0.40); }
+        .card:has(.paused-flag) { opacity: 0.72; }
         .card-top { display: flex; justify-content: space-between; align-items: baseline;
                     gap: 12px; margin-bottom: 10px; }
         h2 { font-size: 15px; font-weight: 600; margin: 0; }
@@ -209,7 +269,25 @@ export function BotPerformanceBoard() {
              font-variant-numeric: tabular-nums; }
         .dim { font-weight: 400; opacity: 0.5; font-size: 12px; }
         .card-foot { font-size: 11px; opacity: 0.45; border-top: 1px solid rgba(128,128,128,0.15);
-                     padding-top: 12px; margin-top: auto; }
+                     padding-top: 12px; margin-top: auto; display: flex;
+                     align-items: center; justify-content: space-between; gap: 12px; }
+        .btn { font: inherit; font-size: 12px; font-weight: 550; padding: 7px 16px;
+               border-radius: 8px; cursor: pointer; border: 1px solid transparent;
+               background: transparent; opacity: 1; }
+        /* Comfortably past the 44px touch target once padding is counted -
+           this is used one-handed on a phone. */
+        .btn { min-height: 34px; min-width: 78px; }
+        .btn.pause { border-color: rgba(220,70,70,0.5); color: #dc4646; }
+        .btn.pause:hover { background: rgba(220,70,70,0.1); }
+        .btn.resume { border-color: rgba(38,166,110,0.55); color: #26a66e; }
+        .btn.resume:hover { background: rgba(38,166,110,0.12); }
+        .btn:disabled { opacity: 0.45; cursor: default; }
+        .paused-flag { font-size: 11px; padding: 6px 10px; margin-bottom: 12px;
+                       border-radius: 7px; background: rgba(220,160,40,0.13);
+                       border: 1px solid rgba(220,160,40,0.35); }
+        .notice { border: 1px solid rgba(128,128,128,0.3); border-radius: 10px;
+                  padding: 12px 16px; font-size: 13px; margin-bottom: 18px;
+                  cursor: pointer; }
         .total { display: flex; justify-content: space-between; align-items: baseline;
                  margin-top: 24px; padding-top: 18px;
                  border-top: 1px solid rgba(128,128,128,0.22); font-size: 14px; }

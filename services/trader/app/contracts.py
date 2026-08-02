@@ -389,6 +389,8 @@ class BotPerformanceSnapshot(BaseModel):
     worstUsd: float
     symbols: list[str] = Field(default_factory=list)
     lastTradeAt: datetime | None = None
+    paused: bool = False
+    canPause: bool = True
 
 
 class FleetSnapshot(BaseModel):
@@ -398,3 +400,10 @@ class FleetSnapshot(BaseModel):
     currency: str | None = None
     openPositions: int = 0
     bots: list[BotPerformanceSnapshot] = Field(default_factory=list)
+
+
+class BotControlResponse(BaseModel):
+    ok: bool
+    botId: str
+    paused: bool
+    message: str

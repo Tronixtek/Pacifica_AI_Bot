@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request
 
 from app.contracts import (
+    BotControlResponse,
     BotPerformanceSnapshot,
     FleetSnapshot,
     DashboardSnapshot,
@@ -128,6 +129,8 @@ async def bots(request: Request) -> FleetSnapshot:
                     worstUsd=perf.worstUsd,
                     symbols=perf.symbols,
                     lastTradeAt=perf.lastTradeAt,
+                    paused=fleet.is_paused(perf.botId),
+                    canPause=fleet._engine_for(perf.botId) is not None,
                 )
             )
 
@@ -139,3 +142,32 @@ async def bots(request: Request) -> FleetSnapshot:
         openPositions=sum(r.openPositions for r in rows),
         bots=rows,
     )
+
+
+@router.post("/api/bots/{bot_id}/pause", response_model=BotControlResponse)
+async def pause_bot(request: Request, bot_id: str) -> BotControlResponse:
+    """Stop a bot opening NEW positions.
+
+    Open positions keep their broker-side stops and continue to be trailed and
+    banked. Pausing is deliberately not "close everything": abandoning managed
+    risk is not what an operator means, and a stop already at the broker is
+    safer than a market exit at whatever the spread happens to be.
+    """
+    fleet = get_fleet(request)
+    if fleet is None:
+        return BotControlResponse(ok=False, botId=bot_id, paused=False,
+                                  message="No bot fleet is running.")
+    ok, message = fleet.set_paused(bot_id, True)
+    return BotControlResponse(ok=ok, botId=bot_id, paused=fleet.is_paused(bot_id),
+                              message=message)
+
+
+@router.post("/api/bots/{bot_id}/resume", response_model=BotControlResponse)
+async def resume_bot(request: Request, bot_id: str) -> BotControlResponse:
+    fleet = get_fleet(request)
+    if fleet is None:
+        return BotControlResponse(ok=False, botId=bot_id, paused=False,
+                                  message="No bot fleet is running.")
+    ok, message = fleet.set_paused(bot_id, False)
+    return BotControlResponse(ok=ok, botId=bot_id, paused=fleet.is_paused(bot_id),
+                              message=message)
