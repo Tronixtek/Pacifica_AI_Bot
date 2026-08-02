@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from "react";
 
-const API =
-  process.env.NEXT_PUBLIC_TRADER_API_URL ?? "http://127.0.0.1:8011";
+// Empty string means same-origin, which is what happens when FastAPI serves
+// this page. Set NEXT_PUBLIC_TRADER_API_URL only when running `next dev`
+// against a backend on a different port.
+const API = process.env.NEXT_PUBLIC_TRADER_API_URL ?? "";
 
 type Bot = {
   botId: string;
@@ -97,7 +99,7 @@ export function BotPerformanceBoard() {
 
       {error && (
         <div className="err">
-          Cannot reach the trader service at {API} — {error}
+          Cannot reach the trader service{API ? ` at ${API}` : ""} — {error}
         </div>
       )}
 

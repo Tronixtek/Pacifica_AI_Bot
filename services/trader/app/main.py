@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.config import settings
@@ -63,3 +65,12 @@ app.add_middleware(
 app.add_middleware(RequestContextMiddleware)
 
 app.include_router(router)
+
+
+# Serve the exported dashboard from the same origin as the API, when it has
+# been built. Mounted AFTER the router so /api and /health keep priority, and
+# skipped silently when absent so the service still starts on a machine where
+# the frontend was never built.
+_dashboard = Path(__file__).resolve().parents[3] / "apps" / "web" / "out"
+if _dashboard.is_dir():
+    app.mount("/", StaticFiles(directory=str(_dashboard), html=True), name="dashboard")
