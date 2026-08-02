@@ -27,6 +27,30 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# The service may be bound to a Tailscale address rather than loopback (see
+# enable-phone-access.ps1), in which case 127.0.0.1 refuses connections even
+# though everything is healthy. Ask the scheduled task what it was told to
+# bind, so the health check follows the actual configuration.
+function Resolve-ServiceHost {
+    param([string]$TaskName, [int]$Port)
+    try {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        # Not $args: that is an automatic variable and assigning to it is
+        # unreliable inside a function.
+        $taskArgs = $task.Actions[0].Arguments
+        if ($taskArgs -match '-BindAddress\s+(\S+)') {
+            $addr = $Matches[1].Trim('"')
+            if ($addr -and $addr -ne "0.0.0.0") { return $addr }
+        }
+    } catch { }
+    # Fall back to whatever is actually listening.
+    $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+            Where-Object { $_.LocalAddress -ne "::" } | Select-Object -First 1
+    if ($conn -and $conn.LocalAddress -notin @("0.0.0.0")) { return $conn.LocalAddress }
+    return "127.0.0.1"
+}
+
 function Step { param([string]$m) Write-Host "`n=== $m ===" -ForegroundColor Cyan }
 function Ok   { param([string]$m) Write-Host "  [ok] $m" -ForegroundColor Green }
 function Warn { param([string]$m) Write-Host "  [!!] $m" -ForegroundColor Yellow }
@@ -213,7 +237,8 @@ try {
     )
 }
 
-Step "Waiting for the service"
+$svcHost = Resolve-ServiceHost -TaskName $TaskName -Port $Port
+Step "Waiting for the service on ${svcHost}:${Port}"
 # This must outlast run-bot.ps1's own wait for MetaTrader 5 (300s by default).
 # A shorter wait here reports failure while the supervisor is still waiting,
 # and the backend then comes up unattended a few minutes later.
@@ -223,7 +248,7 @@ $lastSeen = ""
 foreach ($i in 1..130) {                     # ~6.5 minutes
     Start-Sleep -Seconds 3
     try {
-        $r = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 4
+        $r = Invoke-RestMethod "http://${svcHost}:$Port/health" -TimeoutSec 4
         Write-Host ""
         Ok "Healthy: status=$($r.status) mode=$($r.mode) liveTrading=$($r.liveTradingEnabled)"
         $healthy = $true
@@ -260,7 +285,7 @@ if (-not $healthy) {
 # --- report ----------------------------------------------------------------
 Step "Bot performance"
 try {
-    $fleet = Invoke-RestMethod "http://127.0.0.1:$Port/api/bots" -TimeoutSec 10
+    $fleet = Invoke-RestMethod "http://${svcHost}:$Port/api/bots" -TimeoutSec 10
     Write-Host ("  {0,-32} {1,7} {2,8} {3,11} {4,6}" -f "BOT","TRADES","WIN%","REALISED","OPEN")
     Write-Host ("  " + ("-" * 68))
     foreach ($b in $fleet.bots) {
@@ -277,7 +302,7 @@ try {
 
 Write-Host @"
 
-  Dashboard : http://127.0.0.1:$Port   (loopback only, by design)
+  Dashboard : http://${svcHost}:$Port
   From your machine:
       ssh -N -L ${Port}:127.0.0.1:$Port Administrator@<vps-ip>
     then open http://127.0.0.1:$Port locally.
