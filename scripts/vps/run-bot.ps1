@@ -39,6 +39,22 @@ if (-not (Test-Path $python)) {
     exit 1
 }
 
+# --- refuse to start beside another instance ------------------------------
+# uvicorn runs application startup BEFORE it binds the port, so a second
+# instance boots all three trading engines and can place orders before dying
+# on the bind error. Supervised, that repeats every 60 seconds: a shadow set
+# of bots trading the same account under the same magic numbers, invisible to
+# the first instance's position limits. Refuse rather than race.
+$holder = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+          Select-Object -First 1
+if ($holder) {
+    $owner = Get-Process -Id $holder.OwningProcess -ErrorAction SilentlyContinue
+    Write-Log "FATAL: port $Port is already held by PID $($holder.OwningProcess) ($($owner.ProcessName))."
+    Write-Log "       Another instance is running. Stop it before starting this one:"
+    Write-Log "         Stop-Process -Id $($holder.OwningProcess) -Force"
+    exit 1
+}
+
 # --- wait for the terminal ------------------------------------------------
 # Presence of the process is not enough: the terminal takes time to connect to
 # the broker, and account_info() returns nothing until it has.
@@ -97,6 +113,17 @@ while ($true) {
         Pop-Location
     }
     $ranFor = [int]((Get-Date) - $started).TotalSeconds
+
+    # If something else grabbed the port while we were down, stop entirely.
+    # Restarting into a taken port is the loop that produces shadow bots.
+    $other = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+             Select-Object -First 1
+    if ($other) {
+        Write-Log "Port $Port is now held by PID $($other.OwningProcess). Another instance"
+        Write-Log "took over; exiting rather than competing for the same account."
+        exit 1
+    }
+
     Write-Log "Backend exited after ${ranFor}s. Restarting in $RestartDelaySeconds s."
     # A process that dies immediately is misconfigured, not merely unlucky.
     # Backing off avoids a hot restart loop filling the disk with logs.
