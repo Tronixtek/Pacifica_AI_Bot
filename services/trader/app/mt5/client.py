@@ -256,6 +256,11 @@ class Mt5Client:
         result = await self._call(mt5.orders_get)
         return list(result) if result is not None else []
 
+    async def history_deals_range(self, start, end) -> list[Any]:
+        """Every deal between two datetimes, for per-bot attribution."""
+        result = await self._call(mt5.history_deals_get, start, end)
+        return list(result) if result is not None else []
+
     async def history_deals_for_position(self, ticket: int) -> list[Any]:
         result = await self._call(mt5.history_deals_get, position=ticket)
         return list(result) if result is not None else []

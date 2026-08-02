@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     minSignalConfidence: float = 0.72
     maxDailyLossPct: float = 3.0
     enforceDailyLossLimit: bool = False
-    maxOpenPositions: int = 3
+    maxOpenPositions: int = 5
     defaultLeverage: float = 3.0
     contrarianExecutionEnabled: bool = True
     # Where to place the target once a signal has been flipped, as a multiple
@@ -159,12 +159,13 @@ class Settings(BaseSettings):
     # much larger fixed loss, which produces a high win rate and a rare large
     # loss. Judge it on realised P/L, never on the win rate: with a 0.20
     # target, 4.00 stop and 0.10 of spread, break-even is about 97%.
+    scalperEnabled: bool = True
     scalperSymbol: str = "GBPUSD"
     scalperTargetUsd: float = 0.20
     scalperStopUsd: float = 4.00
     scalperLots: float = 0.0            # 0 = the broker minimum
     scalperSide: Literal["buy", "sell", "alternate"] = "alternate"
-    scalperMaxOpenPositions: int = 3
+    scalperMaxOpenPositions: int = 5
     scalperPollSec: float = 2.0
     # Distinct from mt5MagicNumber so the main bot's account view, which
     # filters by magic, never counts these positions as its own.
@@ -175,6 +176,25 @@ class Settings(BaseSettings):
     scalperMaxDrawdownUsd: float = 25.0
     scalperMaxConsecutiveLosses: int = 5
     scalperMaxTrades: int = 0            # 0 = unlimited
+
+    # --- CRT bot (magic 990213) -------------------------------------------
+    # Candle Range Theory: a sweep of the previous range candle sets direction,
+    # the stop sits beyond the swept wick, and the exit is a trailing stop.
+    # Measured unprofitable in backtest at every configuration tried; it runs
+    # here so its live results can be compared against the other bots.
+    crtEnabled: bool = True
+    crtMagicNumber: int = 990_213
+    crtExecutionTimeframe: str = "5m"
+    # Range candle = this many execution bars. 3 x 5m = 15m range candles.
+    crtRangeFactor: int = 3
+    crtMaxOpenPositions: int = 5
+    crtRiskPerTradePct: float = 0.5
+    crtPollSec: float = 10.0
+    # Ignore one-tick overshoots: a sweep should be a real excursion.
+    crtMinSweepAtr: float = 0.1
+    crtStopBufferAtr: float = 0.25
+    crtTrailActivateR: float = 0.25
+    crtTrailAtrMultiple: float = 0.5
 
     persistRuntimeState: bool = True
     stateStorePath: Path = Path("data/state/runtime.sqlite3")

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Request
 
 from app.contracts import (
+    BotPerformanceSnapshot,
+    FleetSnapshot,
     DashboardSnapshot,
     DiagnosticsResponse,
     HealthResponse,
@@ -18,6 +22,10 @@ router = APIRouter()
 
 def get_engine(request: Request) -> TradingEngine:
     return request.app.state.engine
+
+
+def get_fleet(request: Request):
+    return getattr(request.app.state, "fleet", None)
 
 
 @router.get("/livez")
@@ -89,3 +97,45 @@ async def submit_test_order(
     payload: SmokeTestOrderRequest,
 ) -> OperatorActionResponse:
     return await get_engine(request).submit_smoke_test_order(payload.symbol)
+
+
+@router.get("/api/bots", response_model=FleetSnapshot)
+async def bots(request: Request) -> FleetSnapshot:
+    """Per-bot performance, attributed by magic number from account history."""
+    engine = get_engine(request)
+    fleet = get_fleet(request)
+    account = engine.state.remoteAccount
+
+    rows: list[BotPerformanceSnapshot] = []
+    if fleet is not None:
+        for perf in await fleet.performance():
+            rows.append(
+                BotPerformanceSnapshot(
+                    botId=perf.botId,
+                    label=perf.label,
+                    magicNumber=perf.magicNumber,
+                    trades=perf.trades,
+                    wins=perf.wins,
+                    losses=perf.losses,
+                    winRate=perf.winRate,
+                    realisedUsd=perf.realisedUsd,
+                    unrealisedUsd=perf.unrealisedUsd,
+                    equityImpactUsd=perf.equityImpactUsd,
+                    averageUsd=perf.averageUsd,
+                    openPositions=perf.openPositions,
+                    openVolume=perf.openVolume,
+                    bestUsd=perf.bestUsd,
+                    worstUsd=perf.worstUsd,
+                    symbols=perf.symbols,
+                    lastTradeAt=perf.lastTradeAt,
+                )
+            )
+
+    return FleetSnapshot(
+        generatedAt=datetime.now(timezone.utc),
+        accountBalanceUsd=account.balanceUsd if account else None,
+        accountEquityUsd=account.equityUsd if account else None,
+        currency=account.currency if account else None,
+        openPositions=sum(r.openPositions for r in rows),
+        bots=rows,
+    )

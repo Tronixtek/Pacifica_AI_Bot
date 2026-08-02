@@ -369,3 +369,32 @@ class PaperBalanceTopUpRequest(BaseModel):
 
 class SmokeTestOrderRequest(BaseModel):
     symbol: str = Field(min_length=2, max_length=16)
+
+
+class BotPerformanceSnapshot(BaseModel):
+    botId: str
+    label: str
+    magicNumber: int
+    trades: int
+    wins: int
+    losses: int
+    winRate: float
+    realisedUsd: float
+    unrealisedUsd: float
+    equityImpactUsd: float
+    averageUsd: float
+    openPositions: int
+    openVolume: float
+    bestUsd: float
+    worstUsd: float
+    symbols: list[str] = Field(default_factory=list)
+    lastTradeAt: datetime | None = None
+
+
+class FleetSnapshot(BaseModel):
+    generatedAt: datetime
+    accountBalanceUsd: float | None = None
+    accountEquityUsd: float | None = None
+    currency: str | None = None
+    openPositions: int = 0
+    bots: list[BotPerformanceSnapshot] = Field(default_factory=list)
