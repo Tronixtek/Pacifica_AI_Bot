@@ -47,8 +47,9 @@ class ScalperEngine:
         self.settings = settings
         self.client = client
         self.stats = ScalperStats()
-        self.symbol: str = ""
-        self.spec: MarketSpec | None = None
+        self.symbols: list[str] = []
+        self.specs: dict[str, MarketSpec] = {}
+        self._nextSymbol = 0
         self.running = False
         self.paused = False
         self.haltReason: str | None = None
@@ -101,49 +102,66 @@ class ScalperEngine:
         names = await self.client.list_symbol_names()
         from app.mt5.symbols import SymbolResolver
 
-        resolution = SymbolResolver(names, self.settings.symbolSuffix).resolve(
-            [self.settings.scalperSymbol]
-        )
+        # scalperSymbols wins; scalperSymbol is kept so an older .env still works.
+        wanted = self.settings.scalperSymbols or [self.settings.scalperSymbol]
+        resolution = SymbolResolver(names, self.settings.symbolSuffix).resolve(wanted)
         if not resolution.resolved:
-            raise RuntimeError(f"No broker symbol matched {self.settings.scalperSymbol}.")
-        self.symbol = resolution.brokerSymbols[0]
-
-        await self.client.symbol_select(self.symbol)
-        if not await self.client.wait_for_tick(self.symbol):
-            raise RuntimeError(f"{self.symbol} never produced a tick.")
-        self.spec = await self.client.symbol_info(self.symbol)
-        if self.spec is None:
-            raise RuntimeError(f"No spec for {self.symbol}.")
+            raise RuntimeError(f"No broker symbol matched any of {wanted}.")
 
         account = await self.client.account_info()
         self.stats.startingEquityUsd = float(account.equity)
 
-        quote = await self.client.symbol_info_tick(self.symbol)
-        lots = self._lots()
-        spread_points = round((quote.askPrice - quote.bidPrice) / self.spec.tickSize)
-        per_point = value_per_point(self.spec, lots)
-        spread_cost = spread_points * per_point
-        ratio = spread_cost_ratio(
-            self.spec, lots, self.settings.scalperTargetUsd, spread_points
-        )
-        breakeven = break_even_win_rate(
-            self.settings.scalperTargetUsd, self.settings.scalperStopUsd, spread_cost
-        )
-
-        self.note(f"Scalper starting on {self.symbol} at {lots} lots")
-        self.note(f"  target {self.settings.scalperTargetUsd:.2f}  stop {self.settings.scalperStopUsd:.2f}")
-        self.note(f"  spread {spread_points} points = {spread_cost:.4f}, "
-                  f"{ratio*100:.0f}% of the target")
-        self.note(f"  break-even win rate {breakeven*100:.1f}%")
+        self.note(f"Scalper starting: target {self.settings.scalperTargetUsd:.2f} "
+                  f"stop {self.settings.scalperStopUsd:.2f}")
         if self.settings.scalperTrailingEnabled:
-            self.note(f"  EXIT: trailing stop, arms at {self.settings.scalperTrailActivateUsd:+.2f} "
-                      f"then follows {self.settings.scalperTrailAtrMultiple} ATR behind")
+            self.note(f"  EXIT: trailing, arms at {self.settings.scalperTrailActivateUsd:+.2f} "
+                      f"then follows {self.settings.scalperTrailAtrMultiple} ATR")
         else:
             self.note(f"  EXIT: fixed target at {self.settings.scalperTargetUsd:+.2f}")
+
+        for broker_name in resolution.brokerSymbols:
+            if not await self.client.symbol_select(broker_name):
+                self.note(f"  {broker_name}: could not be selected, skipping")
+                continue
+            if not await self.client.wait_for_tick(broker_name):
+                self.note(f"  {broker_name}: no tick, skipping")
+                continue
+            spec = await self.client.symbol_info(broker_name)
+            if spec is None:
+                self.note(f"  {broker_name}: no spec, skipping")
+                continue
+
+            quote = await self.client.symbol_info_tick(broker_name)
+            lots = spec.volumeMin if self.settings.scalperLots <= 0 else self.settings.scalperLots
+            per_point = value_per_point(spec, lots)
+            if per_point <= 0:
+                self.note(f"  {broker_name}: cannot price a cash target at {lots} lots, skipping")
+                continue
+
+            spread_points = round((quote.askPrice - quote.bidPrice) / spec.tickSize)
+            spread_cost = spread_points * per_point
+            ratio = spread_cost_ratio(spec, lots, self.settings.scalperTargetUsd, spread_points)
+            breakeven = break_even_win_rate(
+                self.settings.scalperTargetUsd, self.settings.scalperStopUsd, spread_cost
+            )
+            cost_r = spread_cost / max(self.settings.scalperStopUsd, 1e-9)
+
+            self.specs[broker_name] = spec
+            self.symbols.append(broker_name)
+            flag = "  <-- expensive" if cost_r > 0.04 else ""
+            self.note(
+                f"  {broker_name:10s} {lots} lots  spread {spread_points}pts="
+                f"{spread_cost:.4f} ({ratio*100:.0f}% of target, {cost_r:.3f}R)  "
+                f"breakeven {breakeven*100:.1f}%{flag}"
+            )
+
+        if not self.symbols:
+            raise RuntimeError("No scalper symbol could be priced; nothing to trade.")
+
+        self.note(f"  trading {len(self.symbols)} symbol(s), "
+                  f"max {self.settings.scalperMaxOpenPositions} open in total")
         self.note(f"  equity {self.stats.startingEquityUsd:.2f}, "
                   f"floor {self.settings.scalperEquityFloorUsd:.2f}")
-        if ratio >= 0.5:
-            self.note("  WARNING: the spread takes half the target or more.")
 
         self.running = True
         await self._loop()
@@ -202,7 +220,13 @@ class ScalperEngine:
     # --- trading ---------------------------------------------------------
 
     async def _open_position(self):
-        quote = await self.client.symbol_info_tick(self.symbol)
+        # Round-robin so one symbol cannot monopolise every slot. Slots are a
+        # single pool across symbols, matching the "5 per bot" limit.
+        symbol = self.symbols[self._nextSymbol % len(self.symbols)]
+        self._nextSymbol += 1
+        spec = self.specs[symbol]
+
+        quote = await self.client.symbol_info_tick(symbol)
         if quote is None or not quote.bidPrice or not quote.askPrice:
             self.note("No quote; waiting.")
             return None
@@ -212,15 +236,15 @@ class ScalperEngine:
             side=side,
             bid=quote.bidPrice,
             ask=quote.askPrice,
-            spec=self.spec,
-            lots=self._lots(),
+            spec=spec,
+            lots=self._lots(symbol),
             target_usd=self.settings.scalperTargetUsd,
             stop_usd=self.settings.scalperStopUsd,
         )
         if not levels.ok:
-            self.note(f"Cannot price the trade: {levels.reason}")
-            self.running = False
-            self.haltReason = levels.reason
+            # One symbol failing to price must not stop the bot: the others
+            # are still tradable, and conditions change.
+            self.note(f"{symbol}: {levels.reason}")
             return None
 
         # With trailing on, the fixed target is replaced by a far backstop:
@@ -231,11 +255,11 @@ class ScalperEngine:
             reach = abs(levels.takeProfit - levels.entryPrice) * 25
             take_profit = round(
                 levels.entryPrice + reach if side == "buy" else levels.entryPrice - reach,
-                self.spec.digits,
+                spec.digits,
             )
 
         order = {
-            "symbol": self.symbol,
+            "symbol": symbol,
             "volume": levels.lots,
             "side": side,
             "sl": levels.stopLoss,
@@ -254,8 +278,8 @@ class ScalperEngine:
             return None
 
         ticket = result.get("order")
-        self.note(f"#{self.stats.trades + 1} {side} {levels.lots} @ {result.get('price')} "
-                  f"TP {levels.takeProfit} SL {levels.stopLoss} ({levels.reason})")
+        self.note(f"#{self.stats.trades + 1} {symbol} {side} {levels.lots} @ "
+                  f"{result.get('price')} SL {levels.stopLoss} ({levels.reason})")
         if self.settings.scalperSide == "alternate":
             self._nextSide = "sell" if side == "buy" else "buy"
         return ticket
@@ -272,7 +296,7 @@ class ScalperEngine:
         widens when BTC is moving and tightens when it is not. A fixed cash
         trail would be stopped out constantly during normal volatility.
         """
-        if not self.settings.scalperTrailingEnabled or self.spec is None:
+        if not self.settings.scalperTrailingEnabled or not self.specs:
             return
 
         positions = [
@@ -282,12 +306,20 @@ class ScalperEngine:
         if not positions:
             return
 
-        atr = await self._recent_atr()
-        if atr <= 0:
-            return
-        offset = atr * self.settings.scalperTrailAtrMultiple
+        # ATR is per symbol, so cache one fetch per symbol per pass rather
+        # than one per position.
+        atr_by_symbol: dict[str, float] = {}
 
         for p in positions:
+            spec = self.specs.get(p.symbol)
+            if spec is None:
+                continue
+            if p.symbol not in atr_by_symbol:
+                atr_by_symbol[p.symbol] = await self._recent_atr(p.symbol)
+            atr = atr_by_symbol[p.symbol]
+            if atr <= 0:
+                continue
+            offset = atr * self.settings.scalperTrailAtrMultiple
             side = "long" if p.type == 0 else "short"
             # profit at the CURRENT price is what MT5 already reports, so use
             # it rather than recomputing a per-point value.
@@ -295,7 +327,7 @@ class ScalperEngine:
                 continue
 
             candidate = (p.price_current - offset) if side == "long" else (p.price_current + offset)
-            candidate = round(candidate, self.spec.digits)
+            candidate = round(candidate, spec.digits)
 
             # Ratchet only. A stop that can loosen turns a bounded loss into an
             # unbounded one.
@@ -313,8 +345,8 @@ class ScalperEngine:
                 self.note(f"  trailed #{p.ticket} stop {p.sl} -> {candidate} "
                           f"(locking {p.profit:+.2f})")
 
-    async def _recent_atr(self, window: int = 14) -> float:
-        rows = await self.client.get_recent_candles(self.symbol, "1m", window + 5)
+    async def _recent_atr(self, symbol: str, window: int = 14) -> float:
+        rows = await self.client.get_recent_candles(symbol, "1m", window + 5)
         if len(rows) < window + 1:
             return 0.0
         trs = []
@@ -355,11 +387,12 @@ class ScalperEngine:
             f"net {self.stats.realisedUsd:+.2f}"
         )
 
-    def _lots(self) -> float:
+    def _lots(self, symbol: str) -> float:
         configured = self.settings.scalperLots
         if configured > 0:
             return configured
-        return self.spec.volumeMin if self.spec else 0.01
+        spec = self.specs.get(symbol)
+        return spec.volumeMin if spec else 0.01
 
     def _summarise(self) -> None:
         s = self.stats

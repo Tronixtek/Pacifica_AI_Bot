@@ -160,6 +160,23 @@ class Settings(BaseSettings):
     # loss. Judge it on realised P/L, never on the win rate: with a 0.20
     # target, 4.00 stop and 0.10 of spread, break-even is about 97%.
     scalperEnabled: bool = True
+    # Symbols the scalper rotates through. Cost per unit of risk varies a lot:
+    # roughly 0.016R on USDJPY against 0.060R on XAUUSD, so gold loses close to
+    # four times faster for the same stop.
+    scalperSymbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["BTCUSD"]
+    )
+
+    @field_validator("scalperSymbols", mode="before")
+    @classmethod
+    def parse_scalper_symbols(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, list):
+            return [i.strip().upper() for i in value if i]
+        if not value:
+            return ["BTCUSD"]
+        return [i.strip().upper() for i in value.split(",") if i.strip()]
+
+    # Retained so an existing .env keeps working; scalperSymbols wins if set.
     scalperSymbol: str = "GBPUSD"
     scalperTargetUsd: float = 0.20
     scalperStopUsd: float = 4.00
