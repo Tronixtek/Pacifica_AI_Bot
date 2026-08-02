@@ -11,6 +11,7 @@ from app.api.routes import router
 from app.config import settings
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
+from app.core.readonly import ReadOnlyApiMiddleware
 from app.runtime.engine import TradingEngine
 from app.runtime.fleet import BotFleet
 
@@ -63,6 +64,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RequestContextMiddleware)
+app.add_middleware(ReadOnlyApiMiddleware, enabled=settings.apiReadOnly)
 
 app.include_router(router)
 

@@ -16,6 +16,10 @@
 param(
     [string]$RepoRoot = "C:\vtfx\Pacifica_AI_Bot",
     [int]$Port = 8011,
+    # Loopback by default. Widen ONLY to an address that is itself private - a
+    # Tailscale 100.x address, say. Never 0.0.0.0: the API has no
+    # authentication and can place trades.
+    [string]$BindAddress = "127.0.0.1",
     [int]$Mt5WaitSeconds = 300,
     [int]$RestartDelaySeconds = 15
 )
@@ -100,7 +104,11 @@ if (-not $ready) {
 }
 
 # --- supervise the backend ------------------------------------------------
-Write-Log "Starting backend on port $Port"
+Write-Log "Starting backend on ${BindAddress}:${Port}"
+if ($BindAddress -eq "0.0.0.0") {
+    Write-Log "WARNING: binding 0.0.0.0 exposes an unauthenticated trading API to"
+    Write-Log "         every network this machine is on. Use a private address."
+}
 while ($true) {
     $started = Get-Date
     # Start-Process with explicit redirects, NOT `& ... 2>&1 | ForEach-Object`.
@@ -112,7 +120,7 @@ while ($true) {
     $errLog = Join-Path $logDir "backend.err.log"
     try {
         $proc = Start-Process -FilePath $python `
-            -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$Port") `
+            -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "$BindAddress", "--port", "$Port") `
             -WorkingDirectory $traderDir `
             -RedirectStandardOutput $outLog `
             -RedirectStandardError $errLog `

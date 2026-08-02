@@ -117,6 +117,27 @@ access.
 FastAPI serves the dashboard itself, so there is no Node process and no second
 port — `apps/web/out` is committed already built.
 
+## Viewing from your phone, from anywhere
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scriptsps\enable-phone-access.ps1
+```
+
+Installs Tailscale, signs the VPS into your tailnet, rebinds the service to
+the private Tailscale address, and sets `API_READ_ONLY=true`.
+
+Then install Tailscale on your phone, sign in with the same account, and open
+`http://<tailscale-ip>:8011`.
+
+Nothing is published. Only devices signed into your tailnet can reach the
+service, and the port is bound to the Tailscale address specifically rather
+than `0.0.0.0` - so the protection is in the socket, not only in a firewall
+rule someone might later change.
+
+`API_READ_ONLY=true` refuses every operator endpoint. The dashboard only
+reads, and a mistyped URL or a stale browser tab should not be able to open a
+position.
+
 ## Surviving reboots
 
 A VPS reboots — for updates, for host maintenance, or because AWS says so. Three

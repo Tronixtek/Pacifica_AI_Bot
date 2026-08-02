@@ -196,6 +196,11 @@ class Settings(BaseSettings):
     crtTrailActivateR: float = 0.25
     crtTrailAtrMultiple: float = 0.5
 
+    # Refuse every operator/trading endpoint, leaving only reads. Intended for
+    # when the API is reachable beyond loopback - a phone on a private network,
+    # say - since none of these endpoints authenticate.
+    apiReadOnly: bool = False
+
     persistRuntimeState: bool = True
     stateStorePath: Path = Path("data/state/runtime.sqlite3")
     stateCheckpointIntervalSec: float = 5.0
