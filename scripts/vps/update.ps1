@@ -164,19 +164,45 @@ try {
 }
 
 Step "Waiting for the service"
+# This must outlast run-bot.ps1's own wait for MetaTrader 5 (300s by default).
+# A shorter wait here reports failure while the supervisor is still waiting,
+# and the backend then comes up unattended a few minutes later.
+$supervisorLog = Join-Path $RepoRoot "logs\supervisor.log"
 $healthy = $false
-foreach ($i in 1..40) {
+$lastSeen = ""
+foreach ($i in 1..130) {                     # ~6.5 minutes
     Start-Sleep -Seconds 3
     try {
         $r = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 4
+        Write-Host ""
         Ok "Healthy: status=$($r.status) mode=$($r.mode) liveTrading=$($r.liveTradingEnabled)"
         $healthy = $true
         break
-    } catch { Write-Host "." -NoNewline }
+    } catch {
+        # Echo what the supervisor is doing instead of printing dots. The usual
+        # answer is that MT5 is not running, which waiting will never fix.
+        $line = if (Test-Path $supervisorLog) {
+            Get-Content $supervisorLog -Tail 1 -ErrorAction SilentlyContinue
+        } else { $null }
+        if ($line -and $line -ne $lastSeen) {
+            Write-Host ""
+            Info $line
+            $lastSeen = $line
+        } else {
+            Write-Host "." -NoNewline
+        }
+    }
 }
 if (-not $healthy) {
-    Warn "No response after 2 minutes. Check the logs:"
-    Info "  Get-Content $RepoRoot\logs\supervisor.log -Tail 40"
+    Write-Host ""
+    Warn "No response after 6 minutes."
+    if (Test-Path $supervisorLog) {
+        Warn "Last lines from the supervisor:"
+        Get-Content $supervisorLog -Tail 12 | ForEach-Object { Info "  $_" }
+    }
+    Warn "The usual cause is MetaTrader 5 not running or not logged in. Check with:"
+    Info "  cd $trader"
+    Info "  .\.venv\Scripts\python.exe -c ""import MetaTrader5 as m; print(m.initialize()); print(m.account_info())"""
     Info "  Get-Content $RepoRoot\logs\backend.log -Tail 60"
     exit 1
 }
