@@ -20,6 +20,9 @@ param(
     # Tailscale 100.x address, say. Never 0.0.0.0: the API has no
     # authentication and can place trades.
     [string]$BindAddress = "127.0.0.1",
+    # How long to wait for a non-loopback bind address to appear on an
+    # interface before giving up and using loopback.
+    [int]$BindWaitSeconds = 120,
     [int]$Mt5WaitSeconds = 300,
     [int]$RestartDelaySeconds = 15
 )
@@ -101,6 +104,34 @@ if (-not $ready) {
     # Start anyway: the engine reports market_data as degraded and retries, which
     # is more useful than the task exiting and leaving nothing running.
     Write-Log "MT5 still not ready after $Mt5WaitSeconds s. Starting the backend regardless."
+}
+
+# --- wait for the bind address to exist -----------------------------------
+# A specific address can only be bound once the interface carrying it is up.
+# Tailscale negotiates its address asynchronously after boot, so the scheduled
+# task can reach this point before 100.x exists and uvicorn dies with
+# "could not bind on any address". Wait for it, then fall back to loopback so
+# the bots keep trading even if the tailnet never comes up - a dashboard that
+# is only reachable from the VPS beats no trading at all.
+if ($BindAddress -ne "127.0.0.1" -and $BindAddress -ne "0.0.0.0") {
+    Write-Log "Waiting up to ${BindWaitSeconds}s for $BindAddress to be assigned..."
+    $deadline = (Get-Date).AddSeconds($BindWaitSeconds)
+    $assigned = $false
+    while ((Get-Date) -lt $deadline) {
+        if (Get-NetIPAddress -IPAddress $BindAddress -ErrorAction SilentlyContinue) {
+            Write-Log "$BindAddress is up"
+            $assigned = $true
+            break
+        }
+        Start-Sleep -Seconds 5
+    }
+    if (-not $assigned) {
+        Write-Log "WARNING: $BindAddress never appeared. Is Tailscale connected?"
+        Write-Log "         Falling back to 127.0.0.1 so trading continues."
+        Write-Log "         The dashboard will only be reachable from this machine"
+        Write-Log "         until the tailnet is up and the service is restarted."
+        $BindAddress = "127.0.0.1"
+    }
 }
 
 # --- supervise the backend ------------------------------------------------

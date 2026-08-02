@@ -134,6 +134,11 @@ class ScalperEngine:
         self.note(f"  spread {spread_points} points = {spread_cost:.4f}, "
                   f"{ratio*100:.0f}% of the target")
         self.note(f"  break-even win rate {breakeven*100:.1f}%")
+        if self.settings.scalperTrailingEnabled:
+            self.note(f"  EXIT: trailing stop, arms at {self.settings.scalperTrailActivateUsd:+.2f} "
+                      f"then follows {self.settings.scalperTrailAtrMultiple} ATR behind")
+        else:
+            self.note(f"  EXIT: fixed target at {self.settings.scalperTargetUsd:+.2f}")
         self.note(f"  equity {self.stats.startingEquityUsd:.2f}, "
                   f"floor {self.settings.scalperEquityFloorUsd:.2f}")
         if ratio >= 0.5:
@@ -178,6 +183,8 @@ class ScalperEngine:
                 await self._record_close(ticket)
             open_tickets = live
 
+            await self._trail_open_positions()
+
             while self.running and len(open_tickets) < self.settings.scalperMaxOpenPositions:
                 ticket = await self._open_position()
                 if ticket is None:
@@ -211,12 +218,23 @@ class ScalperEngine:
             self.haltReason = levels.reason
             return None
 
+        # With trailing on, the fixed target is replaced by a far backstop:
+        # capping the winner is the exact thing the trail exists to avoid. The
+        # backstop still bounds the position broker-side if this process dies.
+        take_profit = levels.takeProfit
+        if self.settings.scalperTrailingEnabled:
+            reach = abs(levels.takeProfit - levels.entryPrice) * 25
+            take_profit = round(
+                levels.entryPrice + reach if side == "buy" else levels.entryPrice - reach,
+                self.spec.digits,
+            )
+
         order = {
             "symbol": self.symbol,
             "volume": levels.lots,
             "side": side,
             "sl": levels.stopLoss,
-            "tp": levels.takeProfit,
+            "tp": take_profit,
             "deviation": self.settings.mt5DeviationPoints,
             # A distinct magic number keeps these trades separable from the
             # main bot's, which filters its account view by its own magic.
@@ -236,6 +254,69 @@ class ScalperEngine:
         if self.settings.scalperSide == "alternate":
             self._nextSide = "sell" if side == "buy" else "buy"
         return ticket
+
+    async def _trail_open_positions(self) -> None:
+        """Ratchet stops behind price once a position is far enough ahead.
+
+        Arming is measured in ACCOUNT CURRENCY, not price distance, because
+        that is the unit this bot works in: the trail engages at the profit the
+        fixed target used to take, so the trade is never worse than the target
+        it replaced - it simply is not closed there.
+
+        The trail distance is ATR-based rather than a fixed cash amount, so it
+        widens when BTC is moving and tightens when it is not. A fixed cash
+        trail would be stopped out constantly during normal volatility.
+        """
+        if not self.settings.scalperTrailingEnabled or self.spec is None:
+            return
+
+        positions = [
+            p for p in await self.client.positions_get()
+            if p.magic == self.settings.scalperMagicNumber
+        ]
+        if not positions:
+            return
+
+        atr = await self._recent_atr()
+        if atr <= 0:
+            return
+        offset = atr * self.settings.scalperTrailAtrMultiple
+
+        for p in positions:
+            side = "long" if p.type == 0 else "short"
+            # profit at the CURRENT price is what MT5 already reports, so use
+            # it rather than recomputing a per-point value.
+            if p.profit < self.settings.scalperTrailActivateUsd:
+                continue
+
+            candidate = (p.price_current - offset) if side == "long" else (p.price_current + offset)
+            candidate = round(candidate, self.spec.digits)
+
+            # Ratchet only. A stop that can loosen turns a bounded loss into an
+            # unbounded one.
+            current = p.sl or (0.0 if side == "long" else float("inf"))
+            improved = candidate > current if side == "long" else candidate < current
+            if not improved:
+                continue
+
+            result = await self.client.modify_position_stops(
+                ticket=p.ticket, symbol=p.symbol,
+                stop_loss=candidate, take_profit=p.tp,
+            )
+            if result.get("retcode") == TRADE_RETCODE_DONE:
+                self.stats.trailUpdates += 1
+                self.note(f"  trailed #{p.ticket} stop {p.sl} -> {candidate} "
+                          f"(locking {p.profit:+.2f})")
+
+    async def _recent_atr(self, window: int = 14) -> float:
+        rows = await self.client.get_recent_candles(self.symbol, "1m", window + 5)
+        if len(rows) < window + 1:
+            return 0.0
+        trs = []
+        for i in range(len(rows) - window, len(rows)):
+            r, pc = rows[i], rows[i - 1]["c"]
+            trs.append(max(r["h"] - r["l"], abs(r["h"] - pc), abs(r["l"] - pc)))
+        return sum(trs) / len(trs) if trs else 0.0
 
     async def _record_close(self, ticket: int) -> None:
         """Bank a position the broker has closed.

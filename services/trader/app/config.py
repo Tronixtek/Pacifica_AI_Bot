@@ -166,6 +166,16 @@ class Settings(BaseSettings):
     scalperLots: float = 0.0            # 0 = the broker minimum
     scalperSide: Literal["buy", "sell", "alternate"] = "alternate"
     scalperMaxOpenPositions: int = 5
+    # Trail instead of taking the fixed target. Spread costs the same per
+    # trade whatever the target, so capping every winner at scalperTargetUsd
+    # hands a fixed cost a shrinking reward. Trailing arms at the old target
+    # and then follows price, so a move that keeps going keeps paying.
+    scalperTrailingEnabled: bool = True
+    # Profit in ACCOUNT CURRENCY before the trail arms. Defaults to the old
+    # fixed target, so the trade is at least as good as taking it.
+    scalperTrailActivateUsd: float = 0.20
+    scalperTrailAtrMultiple: float = 0.5
+
     scalperPollSec: float = 2.0
     # Distinct from mt5MagicNumber so the main bot's account view, which
     # filters by magic, never counts these positions as its own.
