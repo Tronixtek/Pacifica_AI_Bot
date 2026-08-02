@@ -73,6 +73,50 @@ Start-ScheduledTask -TaskName VTFX-Bot
 curl http://127.0.0.1:8011/health
 ```
 
+## Everyday use
+
+Once set up, one command does everything:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\vtfx\Pacifica_AI_Bot\scripts\vps\update.ps1
+```
+
+It stops the bots, pulls the branch, reinstalls dependencies **only if
+`requirements.txt` changed**, warns about any new settings your `.env` does not
+set, restarts, waits for health, and prints each bot's performance.
+
+It **refuses to restart while positions are open** unless you pass `-Force`.
+Broker-side stops survive a restart, but trailing state lives in memory — the
+position would ride to its original stop with nothing managing it.
+
+## Reaching the dashboard from your own machine
+
+The API has **no authentication** and can place trades — `POST
+/api/operator/test-order` opens a real position. Its only protection is that
+uvicorn binds `127.0.0.1`. **Never publish port 8011.**
+
+Run once on the VPS:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\vps\enable-remote-access.ps1 -AllowFromIp <your.ip>
+```
+
+That installs OpenSSH Server, restricts port 22 to your address, and adds an
+explicit firewall block on 8011 so a later change to the security group or the
+bind address cannot expose it.
+
+Then from your machine:
+
+```powershell
+ssh -N -L 8011:127.0.0.1:8011 Administrator@<vps-ip>
+```
+
+Leave it running and open `http://127.0.0.1:8011`. Closing the tunnel closes all
+access.
+
+FastAPI serves the dashboard itself, so there is no Node process and no second
+port — `apps/web/out` is committed already built.
+
 ## Surviving reboots
 
 A VPS reboots — for updates, for host maintenance, or because AWS says so. Three
