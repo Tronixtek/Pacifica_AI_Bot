@@ -31,14 +31,49 @@ class BotFleet:
 
     @property
     def registry(self) -> dict[int, tuple[str, str]]:
-        """Magic number -> (id, label) for everything trading this account."""
+        """Magic number -> (id, label) for everything trading this account.
+
+        Labels are derived from the live settings rather than hardcoded, so the
+        dashboard cannot describe a bot as doing something it no longer does -
+        the scalper read "Fixed-target scalper" for a while after it had been
+        switched to trailing.
+        """
+        s = self.settings
+
+        pa_exit = (
+            f"trailing {s.trailAtrMultiple:g} ATR"
+            if s.trailingStopEnabled
+            else f"{s.contrarianTargetRiskMultiple:g}R target"
+        )
+        pa_setups = "+".join(s.enabledSetups) if s.enabledSetups else "all setups"
+        direction = "fade" if s.contrarianExecutionEnabled else "follow"
         entries = {
-            self.settings.mt5MagicNumber: ("price_action", "Price Action (breakout fade)"),
+            s.mt5MagicNumber: (
+                "price_action",
+                f"Price Action ({pa_setups} {direction}, {pa_exit}, {s.strategyTimeframe})",
+            )
         }
-        if self.settings.scalperEnabled:
-            entries[self.settings.scalperMagicNumber] = ("scalper", "Fixed-target scalper")
-        if self.settings.crtEnabled:
-            entries[self.settings.crtMagicNumber] = ("crt", "CRT sweep + trail")
+
+        if s.scalperEnabled:
+            scalp_exit = (
+                f"trails from ${s.scalperTrailActivateUsd:.2f}"
+                if s.scalperTrailingEnabled
+                else f"fixed ${s.scalperTargetUsd:.2f} target"
+            )
+            entries[s.scalperMagicNumber] = (
+                "scalper",
+                f"Scalper ({scalp_exit}, ${s.scalperStopUsd:.2f} stop)",
+            )
+
+        if s.crtEnabled:
+            window = f"{s.crtRangeFactor}x{s.crtExecutionTimeframe}"
+            crt_exit = (
+                f"trails {s.crtTrailAtrMultiple:g} ATR"
+                if s.crtTrailActivateR > 0
+                else "fixed target"
+            )
+            entries[s.crtMagicNumber] = ("crt", f"CRT sweep ({window}, {crt_exit})")
+
         return entries
 
     async def start(self, symbols: list[str], specs: dict) -> None:
