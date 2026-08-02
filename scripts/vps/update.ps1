@@ -147,6 +147,29 @@ if (-not (Test-Path $envFile)) {
     }
 }
 
+# --- validate the config before restarting --------------------------------
+# A malformed .env crashes the backend one second after launch, and the
+# supervisor then retries on a 60s backoff. Without this check the only
+# symptom is a health wait that times out for reasons nothing surfaces.
+Step "Validating the configuration"
+Push-Location $trader
+try {
+    $check = & $python -c "from app.config import Settings; s=Settings(); print(f'{s.botMode}|{\",\".join(s.symbols)}|{s.enableLiveTrading}')" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Warn "The configuration does not load:"
+        $check | ForEach-Object { Info "  $_" }
+        Warn ""
+        Warn "Fix $envFile before restarting."
+        Warn "A parse error names the offending line; PowerShell's -Encoding utf8"
+        Warn "writes a BOM, so prefer -Encoding ascii when writing this file."
+        exit 1
+    }
+    $parts = "$check".Trim() -split '\|'
+    Ok "mode=$($parts[0]) symbols=$($parts[1]) liveTrading=$($parts[2])"
+} finally {
+    Pop-Location
+}
+
 if ($SkipRestart) { Step "Done (restart skipped)"; exit 0 }
 
 # --- start -----------------------------------------------------------------
