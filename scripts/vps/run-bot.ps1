@@ -103,15 +103,35 @@ if (-not $ready) {
 Write-Log "Starting backend on port $Port"
 while ($true) {
     $started = Get-Date
-    Push-Location $traderDir
+    # Start-Process with explicit redirects, NOT `& ... 2>&1 | ForEach-Object`.
+    # In PowerShell 5.1 that pipeline wraps every stderr line from a native
+    # executable in an ErrorRecord and can drop the output altogether - which
+    # is how the backend crashed repeatedly while backend.log was never even
+    # created, leaving the failure invisible.
+    $outLog = Join-Path $logDir "backend.log"
+    $errLog = Join-Path $logDir "backend.err.log"
     try {
-        & $python -m uvicorn app.main:app --host 127.0.0.1 --port $Port 2>&1 |
-            ForEach-Object { Add-Content -Path (Join-Path $logDir "backend.log") -Value $_ -Encoding utf8 }
+        $proc = Start-Process -FilePath $python `
+            -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$Port") `
+            -WorkingDirectory $traderDir `
+            -RedirectStandardOutput $outLog `
+            -RedirectStandardError $errLog `
+            -NoNewWindow -PassThru
+        $proc.WaitForExit()
+        $exitCode = $proc.ExitCode
     } catch {
-        Write-Log "Backend threw: $_"
-    } finally {
-        Pop-Location
+        Write-Log "Could not launch the backend: $_"
+        $exitCode = -1
     }
+
+    # Surface the tail of stderr into the supervisor log, so one file tells the
+    # whole story rather than pointing at another that may not exist.
+    if ((Test-Path $errLog) -and (Get-Item $errLog).Length -gt 0) {
+        Write-Log "--- backend stderr (last 15 lines) ---"
+        Get-Content $errLog -Tail 15 | ForEach-Object { Write-Log "    $_" }
+        Write-Log "--- end stderr ---"
+    }
+    Write-Log "Backend exit code: $exitCode"
     $ranFor = [int]((Get-Date) - $started).TotalSeconds
 
     # If something else grabbed the port while we were down, stop entirely.
