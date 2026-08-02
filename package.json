@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "node scripts/dev.js",
     "dev:web": "npm --workspace @vtfx-mt5-bot/web run dev",
-    "build:web": "npm --workspace @vtfx-mt5-bot/web run build"
+    "build:web": "node scripts/check-build-env.js && npm --workspace @vtfx-mt5-bot/web run build",
+    "check:build-env": "node scripts/check-build-env.js"
   },
   "engines": {
     "node": ">=22.0.0",
