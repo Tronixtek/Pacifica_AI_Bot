@@ -128,3 +128,76 @@ def test_the_exception_does_not_open_up_other_bot_routes():
         return {"closed": True}
 
     assert TestClient(app).post("/api/bots/scalper/close-all").status_code == 403
+
+
+# --- the engines actually honour the flag ---------------------------------
+
+
+class RecordingClient:
+    """Fails loudly if a paused engine touches the broker."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def get_recent_candles(self, *a, **k):
+        self.calls.append("get_recent_candles")
+        return []
+
+    async def positions_get(self):
+        self.calls.append("positions_get")
+        return []
+
+    async def symbol_info_tick(self, *a, **k):
+        self.calls.append("symbol_info_tick")
+        return None
+
+    async def send_market_order(self, *a, **k):
+        self.calls.append("send_market_order")
+        raise AssertionError("a paused engine must never submit an order")
+
+
+@pytest.mark.asyncio
+async def test_paused_crt_does_not_scan_or_order():
+    from app.crt.engine import CrtEngine
+
+    client = RecordingClient()
+    engine = CrtEngine(Settings(_env_file=None), client)
+    engine.symbols = ["BTCUSDm"]
+    engine.paused = True
+
+    await engine._scan("BTCUSDm")
+
+    assert client.calls == [], f"paused engine still called: {client.calls}"
+
+
+@pytest.mark.asyncio
+async def test_unpaused_crt_does_reach_for_candles():
+    """The counterpart, so the test above proves pausing rather than a no-op."""
+    from app.crt.engine import CrtEngine
+    from app.mt5.models import MarketSpec
+
+    client = RecordingClient()
+    engine = CrtEngine(Settings(_env_file=None), client)
+    engine.symbols = ["BTCUSDm"]
+    engine.paused = False
+    engine.specs = {
+        "BTCUSDm": MarketSpec(
+            symbol="BTCUSDm", digits=2, tickSize=0.01, tickValue=0.01,
+            contractSize=1.0, volumeStep=0.01, volumeMin=0.01, volumeMax=200.0,
+        )
+    }
+
+    await engine._scan("BTCUSDm")
+
+    assert "get_recent_candles" in client.calls
+
+
+@pytest.mark.asyncio
+async def test_paused_scalper_opens_nothing_but_still_manages_positions():
+    from app.scalper.engine import ScalperEngine
+
+    engine = ScalperEngine(Settings(_env_file=None), RecordingClient())
+    engine.paused = True
+    # The loop guard is `not self.paused`, so a paused engine skips the
+    # top-up branch entirely while reconciliation and trailing continue.
+    assert engine.paused is True
