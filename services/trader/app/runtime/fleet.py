@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from app.config import Settings
 from app.crt.engine import CrtEngine
+from app.edge.engine import EdgeEngine
 from app.mt5.client import Mt5Client
 from app.performance.attribution import BotPerformance, attribute
 from app.scalper.engine import ScalperEngine
@@ -30,6 +31,7 @@ class BotFleet:
         self.engine = engine
         self.scalper: ScalperEngine | None = None
         self.crt: CrtEngine | None = None
+        self.edge: EdgeEngine | None = None
         self._tasks: list[asyncio.Task] = []
         self.startedAt: datetime | None = None
 
@@ -78,6 +80,16 @@ class BotFleet:
             )
             entries[s.crtMagicNumber] = ("crt", f"CRT sweep ({window}, {crt_exit})")
 
+        if s.edgeEnabled:
+            veto = f" under {s.edgeHigherTimeframe}" if s.edgeHigherTimeframe else ""
+            gate = "EMA20/50/200" if s.edgeRequireAnchor else "EMA20/50"
+            entries[s.edgeMagicNumber] = (
+                "edge",
+                f"Edge ({'+'.join(s.edgeSymbols)} {s.edgeTimeframe}{veto}, "
+                f"{gate} + candlestick, trails from {s.edgeTrailActivateR:g}R, "
+                f"{s.edgeRiskPct:g}% risk)",
+            )
+
         return entries
 
     async def start(self, symbols: list[str], specs: dict) -> None:
@@ -93,6 +105,13 @@ class BotFleet:
                 asyncio.create_task(self._guard("crt", self.crt.start(symbols, specs)))
             )
 
+        if self.settings.edgeEnabled:
+            # Resolves its own symbols rather than reusing the main engine's:
+            # it deliberately trades instruments the others do not, chosen on
+            # measured cost per unit of risk rather than on convenience.
+            self.edge = EdgeEngine(self.settings, self.client)
+            self._tasks.append(asyncio.create_task(self._guard("edge", self.edge.start())))
+
     async def _guard(self, name: str, coro) -> None:
         """Keep one bot's failure from taking down the others or the API."""
         try:
@@ -107,6 +126,8 @@ class BotFleet:
             self.scalper.running = False
         if self.crt:
             await self.crt.stop()
+        if self.edge:
+            await self.edge.stop()
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -121,6 +142,7 @@ class BotFleet:
             "price_action": self.engine,
             "scalper": self.scalper,
             "crt": self.crt,
+            "edge": self.edge,
         }.get(bot_id)
 
     def is_paused(self, bot_id: str) -> bool:

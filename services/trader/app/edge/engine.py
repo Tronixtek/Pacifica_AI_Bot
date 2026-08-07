@@ -87,8 +87,8 @@ class EdgeEngine:
             self.specs[broker] = spec
             self._valuePerPoint[broker] = value
 
-        if result.missing:
-            self.note(f"Not offered by this broker: {', '.join(result.missing)}")
+        if result.unresolved:
+            self.note(f"Not offered by this broker: {', '.join(result.unresolved)}")
         self.note(f"Trading {', '.join(self.symbols) or '(nothing)'}")
 
     async def _bars(self, symbol: str, interval: str, count: int) -> list[Bar]:

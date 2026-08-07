@@ -264,11 +264,21 @@ class Settings(BaseSettings):
             return ["XAUUSD"]
         return [i.strip().upper() for i in value.split(",") if i.strip()]
 
-    # 30m measured +0.135R at 4.2 trades/day against 1h's +0.151R at 2.1/day -
-    # nearly double the daily total, and stable in both halves either way.
-    edgeTimeframe: str = "30m"
-    # The multi-timeframe veto. Set empty to disable and trade the execution
-    # timeframe alone.
+    # 30m is the strongest configuration measured (+0.135R at 4.2 trades/day,
+    # t=2.17, stable) but it CANNOT be traded on a small account: gold at
+    # $4,344 with a 30m ATR of 14.6 risks $12.73 at the 0.01 minimum lot, or
+    # 2.59% of a $491 account. 15m is 1.65%. Only 5m fits, at 0.63%.
+    #
+    # 30m needs roughly $1,600 of equity, 15m roughly $1,000, before the
+    # minimum lot sits inside the 0.80% ceiling. Raise this the moment the
+    # account can carry it - the edge at 30m is three times larger and its
+    # evidence far stronger (t=3.03 against t=1.97 here).
+    edgeTimeframe: str = "5m"
+    # The multi-timeframe veto, and the reason 5m is viable at all. Measured on
+    # gold 5m, expectancy rises monotonically with the veto timeframe:
+    # none +0.039R, 30m +0.043R, 1h +0.060R, 4h +0.095R. The 4h veto discards
+    # 61% of signals and more than doubles what the rest are worth.
+    # Set empty to disable and trade the execution timeframe alone.
     edgeHigherTimeframe: str = "4h"
     # Stacked EMA20/50/200. The sweep's "full" gate beat the "fast" one on
     # gold at every exit tested.

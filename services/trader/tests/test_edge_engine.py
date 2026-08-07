@@ -137,14 +137,51 @@ def test_edge_magic_differs_from_every_archived_bot():
 
 # --- defaults reflect what was measured -----------------------------------
 
-def test_defaults_match_the_sweep_result():
-    s = Settings()
-    assert s.edgeSymbols == ["XAUUSD"]
-    assert s.edgeTimeframe == "30m"
-    assert s.edgeRequireAnchor is True
-    assert s.edgeTrailActivateR == 1.0
+def shipped(name):
+    """The default compiled into the class, ignoring any local .env.
+
+    Read from model_fields rather than an instance, because a developer's .env
+    would otherwise mask what actually ships to a new machine.
+    """
+    return Settings.model_fields[name].default
+
+
+def test_shipped_defaults_match_what_was_measured():
+    assert shipped("edgeTimeframe") == "5m"
+    assert shipped("edgeHigherTimeframe") == "4h"
+    assert shipped("edgeRequireAnchor") is True
+    assert shipped("edgeTrailActivateR") == 1.0
+
+
+def test_higher_timeframe_veto_ships_on():
+    """It is what makes 5m viable: +0.039R without it, +0.095R with 4h."""
+    assert shipped("edgeHigherTimeframe")
 
 
 def test_ships_disabled():
-    """Nothing trades until it is deliberately switched on."""
-    assert Settings().edgeEnabled is False
+    """Nothing trades on a fresh install until deliberately switched on."""
+    assert shipped("edgeEnabled") is False
+
+
+def test_risk_ceiling_would_refuse_gold_above_5m_on_a_small_account():
+    """The constraint that forced 5m, asserted rather than remembered.
+
+    Gold at ~$4,344 with a 30m ATR near 14.6 risks $12.73 at the 0.01 minimum
+    lot - 2.59% of a $491 account, well past the ceiling. If someone raises
+    edgeTimeframe without also funding the account, the risk manager must
+    still refuse rather than quietly trade oversized.
+    """
+    from app.edge.risk import RiskManager, RiskSettings
+    from app.mt5.models import MarketSpec
+
+    gold = MarketSpec(symbol="XAUUSDm", digits=3, tickSize=0.001, tickValue=0.01,
+                      contractSize=100.0, volumeStep=0.01, volumeMin=0.01,
+                      volumeMax=100.0)
+    m = RiskManager(RiskSettings(targetRiskPct=0.5, maxRiskPct=0.8), suffix="m")
+    d = m.evaluate(
+        symbol="XAUUSDm", direction="buy", entry=4344.0, stop=4344.0 - 12.73,
+        spec=gold, valuePerPricePoint=100.0, equity=491.0, startingEquity=491.0,
+        openPositions=[], realisedToday=0.0,
+    )
+    assert not d.allowed
+    assert "too large for this account" in d.reason
