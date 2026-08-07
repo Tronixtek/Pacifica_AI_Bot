@@ -159,7 +159,10 @@ class Settings(BaseSettings):
     # much larger fixed loss, which produces a high win rate and a rare large
     # loss. Judge it on realised P/L, never on the win rate: with a 0.20
     # target, 4.00 stop and 0.10 of spread, break-even is about 97%.
-    scalperEnabled: bool = True
+    # Archived 2026-08-07: no entry signal (side merely alternated), so it
+    # held opposing positions that could only net out to minus the spread.
+    # Measured -$0.121/trade live. See tag archive/three-bot-fleet.
+    scalperEnabled: bool = False
     # Symbols the scalper rotates through. Cost per unit of risk varies a lot:
     # roughly 0.016R on USDJPY against 0.060R on XAUUSD, so gold loses close to
     # four times faster for the same stop.
@@ -209,7 +212,9 @@ class Settings(BaseSettings):
     # the stop sits beyond the swept wick, and the exit is a trailing stop.
     # Measured unprofitable in backtest at every configuration tried; it runs
     # here so its live results can be compared against the other bots.
-    crtEnabled: bool = True
+    # Archived 2026-08-07: negative at every reward ratio tested,
+    # -$0.451/trade live. See tag archive/three-bot-fleet.
+    crtEnabled: bool = False
     crtMagicNumber: int = 990_213
     crtExecutionTimeframe: str = "5m"
     # Range candle = this many execution bars. 3 x 5m = 15m range candles.
