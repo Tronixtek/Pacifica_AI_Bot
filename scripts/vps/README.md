@@ -215,3 +215,25 @@ PowerShell, and re-run.
 Algorithmic trading is off in the terminal. Enable it in
 Tools > Options > Expert Advisors, not the toolbar button - the toolbar toggle
 resets on restart.
+
+## Restarting after a config change
+
+Use `stop-bot.ps1`, not `Stop-ScheduledTask` on its own.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scriptsps\stop-bot.ps1 -ThenStart
+```
+
+`Stop-ScheduledTask` stops the supervisor but leaves the python backend it
+spawned still running and still holding port 8011. The next start then hits
+the supervisor's own port guard and exits, which is correct - two instances
+would trade one account under one magic number - but it fails silently: the
+API still answers, the dashboard still renders, and the OLD configuration
+keeps running. A config change appears to deploy and does not.
+
+The tell is the startup line. Check the timestamp is fresh and the equity
+matches the account:
+
+```powershell
+Select-String -Path logsackend.log -Pattern '\[edge\]' | Select-Object -Last 6
+```
