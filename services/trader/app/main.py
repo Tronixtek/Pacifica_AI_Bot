@@ -30,6 +30,12 @@ async def lifespan(app: FastAPI):
     # risk them trading a different instrument than the dashboard reports.
     fleet = BotFleet(settings, engine.client, engine=engine)
     app.state.fleet = fleet
+
+    # Applied at startup so it survives a restart. Pausing through the API is
+    # runtime state only, which on a VPS means an archived strategy resumes
+    # trading after every reboot.
+    if not settings.priceActionEnabled:
+        fleet.set_paused("price_action", True)
     if not settings.useSimulatedFeed:
         await fleet.start(engine.engineSymbols, engine.marketData.marketSpecs)
     try:

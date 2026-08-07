@@ -237,6 +237,17 @@ class Settings(BaseSettings):
     stateStorePath: Path = Path("data/state/runtime.sqlite3")
     stateCheckpointIntervalSec: float = 5.0
 
+    # The original price-action strategy. Archived 2026-08-07 alongside the
+    # scalper and CRT: measured ~+0.01R, and its live take-profit at 0.25R made
+    # a winner above +0.25R structurally impossible, so 74% of all its profit
+    # came from 1.6% of its trades. Left constructible because the app owns the
+    # engine, but paused at startup unless deliberately re-enabled.
+    #
+    # A config flag rather than the API pause, because an API pause is runtime
+    # state: it does not survive a restart, and on a VPS that means the bot
+    # quietly resumes trading after every reboot.
+    priceActionEnabled: bool = False
+
     # --- edge bot ---------------------------------------------------------
     # MA trend gate + candlestick entry + structural stop. The only design in
     # this project that beat a matched coin-flip control while staying positive

@@ -185,3 +185,29 @@ def test_risk_ceiling_would_refuse_gold_above_5m_on_a_small_account():
     )
     assert not d.allowed
     assert "too large for this account" in d.reason
+
+
+def test_price_action_ships_disabled_and_persistently_so():
+    """An API pause is runtime state and does not survive a reboot.
+
+    On a VPS that distinction matters: the archived price-action strategy
+    would resume trading after every restart if the only thing holding it
+    back were a POST to /api/bots/price_action/pause.
+    """
+    assert shipped("priceActionEnabled") is False
+
+
+def test_startup_pauses_price_action_when_disabled():
+    from app.runtime.fleet import BotFleet
+
+    class Stub:
+        def __init__(self):
+            self._paused = False
+
+    s = Settings(priceActionEnabled=False)
+    engine = Stub()
+    fleet = BotFleet(s, client=None, engine=engine)
+    if not s.priceActionEnabled:
+        fleet.set_paused("price_action", True)
+    assert engine._paused is True
+    assert fleet.is_paused("price_action") is True
