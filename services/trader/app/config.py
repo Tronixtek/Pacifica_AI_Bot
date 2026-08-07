@@ -237,6 +237,76 @@ class Settings(BaseSettings):
     stateStorePath: Path = Path("data/state/runtime.sqlite3")
     stateCheckpointIntervalSec: float = 5.0
 
+    # --- edge bot ---------------------------------------------------------
+    # MA trend gate + candlestick entry + structural stop. The only design in
+    # this project that beat a matched coin-flip control while staying positive
+    # in both halves of the sample.
+    #
+    # A 280-cell sweep (7 instruments x 4 timeframes x 2 gates x 5 exits) put
+    # every survivor worth having on gold. GBPUSD was included as a deliberate
+    # negative control and produced none, which is what the cost study
+    # predicts: spread there is 0.278R against 0.024R on gold, and no edge
+    # measured anywhere in this project exceeded 0.05R.
+    edgeEnabled: bool = False
+    # Gold only by default. The second-tier candidates (USTEC 15m, US30 15m)
+    # measured t<2.0 and are indistinguishable from the ~19 false positives
+    # that 280 trials produce by chance, so they are opt-in rather than on.
+    edgeSymbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["XAUUSD"]
+    )
+
+    @field_validator("edgeSymbols", mode="before")
+    @classmethod
+    def parse_edge_symbols(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, list):
+            return [i.strip().upper() for i in value if i]
+        if not value:
+            return ["XAUUSD"]
+        return [i.strip().upper() for i in value.split(",") if i.strip()]
+
+    # 30m measured +0.135R at 4.2 trades/day against 1h's +0.151R at 2.1/day -
+    # nearly double the daily total, and stable in both halves either way.
+    edgeTimeframe: str = "30m"
+    # The multi-timeframe veto. Set empty to disable and trade the execution
+    # timeframe alone.
+    edgeHigherTimeframe: str = "4h"
+    # Stacked EMA20/50/200. The sweep's "full" gate beat the "fast" one on
+    # gold at every exit tested.
+    edgeRequireAnchor: bool = True
+    edgeStopBufferAtr: float = 0.10
+    # Spread ceiling as a fraction of the stop distance. This single ratio
+    # decided every result measured here, so it is enforced per trade rather
+    # than assumed from the instrument.
+    edgeMaxSpreadFraction: float = 0.25
+
+    # Exit: trail armed at 1.0R. Arming earlier protects a profit that would
+    # have grown anyway 95% of the time and pays for it with all the upside.
+    edgeTrailActivateR: float = 1.0
+    edgeTrailAtrMultiple: float = 0.5
+    # Not a target - a broker-side backstop far beyond where the trail will
+    # ever exit, so the position stays bounded if this process dies.
+    edgeBackstopR: float = 25.0
+
+    # Risk. 0.5% is roughly one-seventh Kelly on the measured edge, which is
+    # the right fraction while the 95% interval still includes zero. A
+    # percentage rather than fixed cash, so it compounds down as well as up.
+    edgeRiskPct: float = 0.50
+    edgeMaxRiskPct: float = 0.80
+    edgeMaxOpenPositions: int = 6
+    edgeMaxHeatPct: float = 3.0
+    # Set to catch malfunction, not variance: at a 31% win rate a 19-loss
+    # streak is expected over 1000 trades, and halting on that stops a working
+    # system at its worst moment.
+    edgeDailyLossHaltPct: float = 6.0
+    edgeHardStopDrawdownPct: float = 25.0
+
+    edgePollSec: float = 20.0
+    edgeMagicNumber: int = 990_214
+    # Index CFDs gap over the weekend and a stop does not protect against a
+    # gap - the fill happens at a price that never traded in between.
+    edgeFlatBeforeWeekend: bool = True
+    edgeWeekendFlatHours: float = 2.0
+
     @field_validator("symbols", mode="before")
     @classmethod
     def parse_symbols(cls, value: str | list[str]) -> list[str]:

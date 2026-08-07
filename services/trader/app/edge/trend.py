@@ -41,6 +41,32 @@ def ema(values: list[float], period: int) -> list[float]:
 MIN_BARS = 400
 
 
+def atr(bars: list[Bar], period: int = 14) -> float:
+    """Average true range of the last `period` bars, Wilder-smoothed.
+
+    True range includes the gap from the previous close, not merely the bar's
+    own high-low. On indices that distinction is the whole point: they close
+    and reopen, and a bar measured without its gap understates the real range
+    badly enough to size a position several times too large.
+    """
+    if len(bars) < 2:
+        return 0.0
+    trs = [bars[0].high - bars[0].low]
+    for i in range(1, len(bars)):
+        prev_close = bars[i - 1].close
+        trs.append(
+            max(
+                bars[i].high - bars[i].low,
+                abs(bars[i].high - prev_close),
+                abs(bars[i].low - prev_close),
+            )
+        )
+    run = trs[0]
+    for t in trs[1:]:
+        run += (t - run) / period
+    return max(0.0, run)
+
+
 # In a range the three EMAs sit almost on top of each other, and their
 # ordering is then decided by rounding rather than by direction - a flat
 # oscillation tests as a clean uptrend on a separation of 0.03 in 100. Demand
