@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.config import Settings
+from app.edge.markets import MarketConfig, markets_from_settings
 from app.edge.risk import OpenRisk, RiskManager, RiskSettings
 from app.edge.signal import Rejection, Signal, evaluate
 from app.edge.trend import MIN_BARS, atr
@@ -36,6 +37,9 @@ class EdgeEngine:
         self.running = False
         self.paused = False
         self.symbols: list[str] = []
+        # Broker symbol -> its own timeframes. Per-market because the measured
+        # best differs by instrument: gold 30m, BTC 15m.
+        self.markets: dict[str, MarketConfig] = {}
         self.specs: dict[str, MarketSpec] = {}
         self.events: list[str] = []
         self.startingEquity: float | None = None
@@ -66,10 +70,16 @@ class EdgeEngine:
     async def _resolve_symbols(self) -> None:
         from app.mt5.symbols import SymbolResolver
 
+        wanted = markets_from_settings(self.settings)
         names = await self.client.list_symbol_names()
         resolver = SymbolResolver(names, self.settings.symbolSuffix)
-        result = resolver.resolve(self.settings.edgeSymbols)
-        for broker in result.brokerSymbols:
+
+        for market in wanted:
+            result = resolver.resolve([market.symbol])
+            if not result.brokerSymbols:
+                self.note(f"{market.symbol}: not offered by this broker; skipping.")
+                continue
+            broker = result.brokerSymbols[0]
             await self.client.symbol_select(broker)
             await self.client.wait_for_tick(broker)
             spec = await self.client.symbol_info(broker)
@@ -84,12 +94,18 @@ class EdgeEngine:
                 self.note(f"{broker}: cannot value a price move; skipping.")
                 continue
             self.symbols.append(broker)
+            self.markets[broker] = MarketConfig(
+                symbol=broker,
+                timeframe=market.timeframe,
+                higherTimeframe=market.higherTimeframe,
+            )
             self.specs[broker] = spec
             self._valuePerPoint[broker] = value
 
-        if result.unresolved:
-            self.note(f"Not offered by this broker: {', '.join(result.unresolved)}")
-        self.note(f"Trading {', '.join(self.symbols) or '(nothing)'}")
+        if self.markets:
+            self.note("Trading " + "; ".join(m.describe() for m in self.markets.values()))
+        else:
+            self.note("No tradeable markets resolved.")
 
     async def _bars(self, symbol: str, interval: str, count: int) -> list[Bar]:
         rows = await self.client.get_recent_candles(symbol, interval, count)
@@ -135,7 +151,12 @@ class EdgeEngine:
         self.note(f"Started. Starting equity ${self.startingEquity:.2f}, "
                   f"risk {self.settings.edgeRiskPct:.2f}% per trade.")
 
-        interval = timeframe_seconds(self.settings.edgeTimeframe)
+        # Paced off the fastest market, so a 15m instrument is not sampled
+        # at a 30m instrument's cadence and misses its closes.
+        interval = min(
+            (timeframe_seconds(m.timeframe) for m in self.markets.values()),
+            default=timeframe_seconds(self.settings.edgeTimeframe),
+        )
         while self.running:
             try:
                 await self._tick()
@@ -158,13 +179,17 @@ class EdgeEngine:
         if self.paused or not self.symbols:
             return
 
-        if self._weekend_imminent():
+        weekend = self._weekend_imminent()
+        if weekend:
             await self._flatten_for_weekend()
-            return
 
         positions = await self.client.positions_get()
         mine = [p for p in positions if p.magic == self.settings.edgeMagicNumber]
         for symbol in self.symbols:
+            # A 24/7 market keeps trading through the weekend window; only the
+            # instruments that actually close are stood down.
+            if weekend and self._closes_for_the_weekend(symbol):
+                continue
             try:
                 await self._consider(symbol, mine)
             except Exception as exc:
@@ -173,7 +198,8 @@ class EdgeEngine:
     # --- the decision ----------------------------------------------------
 
     async def _consider(self, symbol: str, mine: list[Any]) -> None:
-        bars = await self._bars(symbol, self.settings.edgeTimeframe, BARS_NEEDED)
+        market = self.markets[symbol]
+        bars = await self._bars(symbol, market.timeframe, BARS_NEEDED)
         if len(bars) < MIN_BARS:
             return
 
@@ -186,10 +212,8 @@ class EdgeEngine:
         self._lastBarTime[symbol] = last_time
 
         higher: list[Bar] | None = None
-        if self.settings.edgeHigherTimeframe:
-            higher = await self._bars(
-                symbol, self.settings.edgeHigherTimeframe, BARS_NEEDED
-            )
+        if market.higherTimeframe:
+            higher = await self._bars(symbol, market.higherTimeframe, BARS_NEEDED)
 
         outcome = evaluate(
             symbol, bars, higher,
@@ -297,7 +321,10 @@ class EdgeEngine:
             spec = self.specs.get(p.symbol)
             if spec is None or not p.sl:
                 continue
-            bars = await self._bars(p.symbol, self.settings.edgeTimeframe, 100)
+            market = self.markets.get(p.symbol)
+            if market is None:
+                continue
+            bars = await self._bars(p.symbol, market.timeframe, 100)
             if len(bars) < 20:
                 continue
             a = atr(bars)
@@ -331,9 +358,25 @@ class EdgeEngine:
             if res.get("retcode") == TRADE_RETCODE_DONE:
                 self.note(f"{p.symbol} #{p.ticket}: stop {p.sl} -> {proposed}")
 
+    def _closes_for_the_weekend(self, symbol: str) -> bool:
+        """Does this instrument stop trading over the weekend?
+
+        Crypto does not. Flattening it on a Friday would close good positions
+        for a gap that never comes, and forfeit the whole weekend - which for
+        BTC is a meaningful share of its trading time, not an edge case.
+
+        Decided from the correlation bucket rather than a second list, so
+        adding an instrument to a bucket carries this behaviour with it.
+        """
+        return self.risk.bucket_for(symbol) != "crypto"
+
     async def _flatten_for_weekend(self) -> None:
         positions = await self.client.positions_get()
-        mine = [p for p in positions if p.magic == self.settings.edgeMagicNumber]
+        mine = [
+            p for p in positions
+            if p.magic == self.settings.edgeMagicNumber
+            and self._closes_for_the_weekend(p.symbol)
+        ]
         if not mine:
             return
         self.note(f"Weekend close approaching; flattening {len(mine)} position(s). "

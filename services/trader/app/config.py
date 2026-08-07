@@ -259,6 +259,26 @@ class Settings(BaseSettings):
     # predicts: spread there is 0.278R against 0.024R on gold, and no edge
     # measured anywhere in this project exceeded 0.05R.
     edgeEnabled: bool = False
+    # Per-market configuration: "SYMBOL:timeframe[:vetoTimeframe]", comma
+    # separated. Takes precedence over edgeSymbols/edgeTimeframe below, which
+    # remain only so an existing .env keeps working.
+    #
+    # The measured best differs by instrument, so a single global timeframe
+    # would necessarily trade one of them at a setting that was never its best:
+    #
+    #   XAUUSD 30m under 1d   +0.198R  t=2.73  oos +0.199/+0.197  2.1 trades/day
+    #   BTCUSD 15m under 1d   +0.146R  t=2.42  oos +0.128/+0.172  4.1 trades/day
+    #
+    # Their edge OVER a matched coin-flip control is near identical (+0.134R
+    # and +0.135R); BTC's headline is lower only because its control is lower,
+    # which is the more honest baseline. BTC also sits in a different
+    # correlation bucket, sizes precisely rather than being pinned to the
+    # minimum lot, and trades through the weekend when gold is shut.
+    #
+    # Do not assume a setting transfers between them. BTC at 30m looks fine at
+    # +0.122R until the control is read: +0.096R of that is simply BTC rising,
+    # leaving t=0.38. BTC at 5m is outright negative.
+    edgeMarkets: str = "XAUUSD:30m:1d,BTCUSD:15m:1d"
     # Gold only by default. The second-tier candidates (USTEC 15m, US30 15m)
     # measured t<2.0 and are indistinguishable from the ~19 false positives
     # that 280 trials produce by chance, so they are opt-in rather than on.

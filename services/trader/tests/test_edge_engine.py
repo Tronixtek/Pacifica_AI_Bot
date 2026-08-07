@@ -215,3 +215,84 @@ def test_startup_pauses_price_action_when_disabled():
         fleet.set_paused("price_action", True)
     assert engine._paused is True
     assert fleet.is_paused("price_action") is True
+
+
+# --- per-market configuration ---------------------------------------------
+
+def test_markets_parse_with_their_own_timeframes():
+    from app.edge.markets import parse_markets
+
+    m = parse_markets("XAUUSD:30m:1d,BTCUSD:15m:1d")
+    assert [x.symbol for x in m] == ["XAUUSD", "BTCUSD"]
+    assert m[0].timeframe == "30m" and m[0].higherTimeframe == "1d"
+    assert m[1].timeframe == "15m" and m[1].higherTimeframe == "1d"
+
+
+def test_veto_is_optional_per_market():
+    from app.edge.markets import parse_markets
+
+    m = parse_markets("BTCUSD:15m")
+    assert m[0].higherTimeframe is None
+
+
+def test_malformed_entries_are_skipped_not_fatal():
+    """One bad symbol must not stop the others trading."""
+    from app.edge.markets import parse_markets
+
+    m = parse_markets("XAUUSD:30m:1d, ,BROKEN,,BTCUSD:15m")
+    assert [x.symbol for x in m] == ["XAUUSD", "BTCUSD"]
+
+
+def test_duplicate_symbols_collapse():
+    """Two configs for one instrument would evade the correlation cap, which
+    counts open positions rather than configuration."""
+    from app.edge.markets import parse_markets
+
+    m = parse_markets("BTCUSD:15m:1d,BTCUSD:30m:1d")
+    assert len(m) == 1
+    assert m[0].timeframe == "15m"
+
+
+def test_falls_back_to_the_legacy_single_market_fields():
+    from app.edge.markets import markets_from_settings
+
+    s = Settings(edgeMarkets="", edgeSymbols=["XAUUSD"],
+                 edgeTimeframe="30m", edgeHigherTimeframe="1d")
+    m = markets_from_settings(s)
+    assert len(m) == 1 and m[0].timeframe == "30m"
+
+
+def test_shipped_markets_are_gold_30m_and_btc_15m():
+    from app.edge.markets import parse_markets
+
+    m = parse_markets(shipped("edgeMarkets"))
+    assert {x.symbol for x in m} == {"XAUUSD", "BTCUSD"}
+    by = {x.symbol: x for x in m}
+    assert by["XAUUSD"].timeframe == "30m"
+    assert by["BTCUSD"].timeframe == "15m"
+    assert all(x.higherTimeframe == "1d" for x in m)
+
+
+# --- weekend handling is per-instrument -----------------------------------
+
+def test_crypto_is_exempt_from_the_weekend_flat():
+    """BTC trades through the weekend; flattening it forfeits that time."""
+    e = engine()
+    assert e._closes_for_the_weekend("XAUUSDm") is True
+    assert e._closes_for_the_weekend("US30m") is True
+    assert e._closes_for_the_weekend("BTCUSDm") is False
+
+
+@pytest.mark.asyncio
+async def test_weekend_flat_leaves_crypto_positions_alone():
+    btc = SimpleNamespace(magic=990214, symbol="BTCUSDm", ticket=1, type=0,
+                          volume=0.01, price_open=60000.0, price_current=61000.0,
+                          sl=59000.0, tp=0.0)
+    gold = SimpleNamespace(magic=990214, symbol="XAUUSDm", ticket=2, type=0,
+                           volume=0.01, price_open=4300.0, price_current=4310.0,
+                           sl=4290.0, tp=0.0)
+    e = engine()
+    e.client = FakeClient(positions=[btc, gold])
+    await e._flatten_for_weekend()
+    closed = [o["symbol"] for o in e.client.orders]
+    assert closed == ["XAUUSDm"]
