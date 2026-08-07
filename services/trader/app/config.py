@@ -275,22 +275,30 @@ class Settings(BaseSettings):
             return ["XAUUSD"]
         return [i.strip().upper() for i in value.split(",") if i.strip()]
 
-    # 30m is the strongest configuration measured (+0.135R at 4.2 trades/day,
-    # t=2.17, stable) but it CANNOT be traded on a small account: gold at
-    # $4,344 with a 30m ATR of 14.6 risks $12.73 at the 0.01 minimum lot, or
-    # 2.59% of a $491 account. 15m is 1.65%. Only 5m fits, at 0.63%.
+    # XAUUSD 30m under a DAILY trend veto: +0.1977R, t=2.73 against a matched
+    # coin-flip control - the strongest result measured in this project, and
+    # the most stable, with halves of +0.1985 and +0.1966.
     #
-    # 30m needs roughly $1,600 of equity, 15m roughly $1,000, before the
-    # minimum lot sits inside the 0.80% ceiling. Raise this the moment the
-    # account can carry it - the edge at 30m is three times larger and its
-    # evidence far stronger (t=3.03 against t=1.97 here).
-    edgeTimeframe: str = "5m"
-    # The multi-timeframe veto, and the reason 5m is viable at all. Measured on
-    # gold 5m, expectancy rises monotonically with the veto timeframe:
-    # none +0.039R, 30m +0.043R, 1h +0.060R, 4h +0.095R. The 4h veto discards
-    # 61% of signals and more than doubles what the rest are worth.
-    # Set empty to disable and trade the execution timeframe alone.
-    edgeHigherTimeframe: str = "4h"
+    # Chosen over 1h (+0.2541R) on throughput: 30m keeps 2.1 trades/day for
+    # 0.41R/day, where 1h keeps 1.05/day for 0.27R/day. Higher per-trade loses
+    # to more trades.
+    #
+    # Requires equity to carry it. Gold near $4,344 with a 30m ATR of 14.6
+    # risks $12.73 at the 0.01 minimum lot, so 30m needs roughly $1,600 before
+    # that sits inside the 0.80% ceiling, and 5m is the only timeframe viable
+    # below that. The risk manager refuses rather than oversizing if this is
+    # raised on an account too small for it.
+    edgeTimeframe: str = "30m"
+    # The veto is the largest single improvement available, and it strengthens
+    # as the veto timeframe rises. On 30m: none +0.134R, 1h +0.127R,
+    # 4h +0.180R, 1d +0.198R. It discards 44% of signals and is worth far more
+    # than any indicator added on top.
+    #
+    # Caveat worth keeping in view: gold has trended hard through the sample,
+    # and the coin-flip control is itself positive (+0.063R at 30m). Judge
+    # this on edge OVER control, not on the headline number - in a range both
+    # fall together.
+    edgeHigherTimeframe: str = "1d"
     # Stacked EMA20/50/200. The sweep's "full" gate beat the "fast" one on
     # gold at every exit tested.
     edgeRequireAnchor: bool = True

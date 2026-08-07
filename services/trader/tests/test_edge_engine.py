@@ -147,14 +147,18 @@ def shipped(name):
 
 
 def test_shipped_defaults_match_what_was_measured():
-    assert shipped("edgeTimeframe") == "5m"
-    assert shipped("edgeHigherTimeframe") == "4h"
+    assert shipped("edgeTimeframe") == "30m"
+    assert shipped("edgeHigherTimeframe") == "1d"
     assert shipped("edgeRequireAnchor") is True
     assert shipped("edgeTrailActivateR") == 1.0
 
 
 def test_higher_timeframe_veto_ships_on():
-    """It is what makes 5m viable: +0.039R without it, +0.095R with 4h."""
+    """The largest single improvement measured.
+
+    On gold 30m: none +0.134R, 1h +0.127R, 4h +0.180R, 1d +0.198R. Shipping
+    it off would trade a materially worse strategy than the one measured.
+    """
     assert shipped("edgeHigherTimeframe")
 
 
