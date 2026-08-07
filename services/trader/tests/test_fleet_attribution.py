@@ -175,3 +175,31 @@ def test_aggregate_drops_an_incomplete_trailing_group():
     """A partial group is a forming candle and must not be treated as closed."""
     bars = [_bar(1, 2, 0, 1) for _ in range(7)]
     assert len(aggregate(bars, 3)) == 2      # 6 bars used, the 7th withheld
+
+
+def test_edge_label_names_every_market_it_actually_trades():
+    """The label must come from the same source the engine trades from.
+
+    The scalper's card once read "Fixed-target scalper" for days after it had
+    been switched to trailing, because its label was written independently of
+    its behaviour. A label describing one market while two run is the same
+    defect.
+    """
+    from app.config import Settings
+    from app.runtime.fleet import BotFleet
+
+    s = Settings(edgeEnabled=True, edgeMarkets="XAUUSD:30m:1d,BTCUSD:15m:1d")
+    label = BotFleet(s, client=None).registry[s.edgeMagicNumber][1]
+    assert "XAUUSD 30m under 1d" in label
+    assert "BTCUSD 15m under 1d" in label
+
+
+def test_edge_label_follows_a_config_change():
+    from app.config import Settings
+    from app.runtime.fleet import BotFleet
+
+    s = Settings(edgeEnabled=True, edgeMarkets="BTCUSD:15m")
+    label = BotFleet(s, client=None).registry[s.edgeMagicNumber][1]
+    assert "BTCUSD 15m" in label
+    assert "XAUUSD" not in label
+    assert "under" not in label          # no veto configured

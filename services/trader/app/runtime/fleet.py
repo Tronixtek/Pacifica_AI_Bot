@@ -81,13 +81,19 @@ class BotFleet:
             entries[s.crtMagicNumber] = ("crt", f"CRT sweep ({window}, {crt_exit})")
 
         if s.edgeEnabled:
-            veto = f" under {s.edgeHigherTimeframe}" if s.edgeHigherTimeframe else ""
+            # Derived from the SAME source the engine trades from. Reading
+            # edgeSymbols/edgeTimeframe here would describe one market while
+            # two were running - the failure the scalper already demonstrated
+            # when its card read "Fixed-target scalper" long after it had been
+            # switched to trailing.
+            from app.edge.markets import markets_from_settings
+
+            markets = "; ".join(m.describe() for m in markets_from_settings(s))
             gate = "EMA20/50/200" if s.edgeRequireAnchor else "EMA20/50"
             entries[s.edgeMagicNumber] = (
                 "edge",
-                f"Edge ({'+'.join(s.edgeSymbols)} {s.edgeTimeframe}{veto}, "
-                f"{gate} + candlestick, trails from {s.edgeTrailActivateR:g}R, "
-                f"{s.edgeRiskPct:g}% risk)",
+                f"Edge ({markets or 'no markets'}, {gate} + candlestick, "
+                f"trails from {s.edgeTrailActivateR:g}R, {s.edgeRiskPct:g}% risk)",
             )
 
         return entries
