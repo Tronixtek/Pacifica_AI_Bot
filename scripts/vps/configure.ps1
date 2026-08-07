@@ -15,7 +15,7 @@
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File configure.ps1 `
-        -Login 476096391 -Server Exness-MT5Trial9 -Symbols "BTCUSD,GBPUSD,EURUSD"
+        -Login 12345678 -Server Broker-Demo01 -Symbols "XAUUSD"
 #>
 [CmdletBinding()]
 param(
