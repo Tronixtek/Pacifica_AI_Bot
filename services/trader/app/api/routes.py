@@ -18,6 +18,30 @@ from app.contracts import (
 )
 from app.runtime.engine import TradingEngine
 
+# Strategies retired on measured evidence. Kept visible so their history stays
+# readable, but marked so nobody mistakes a dimmed card for a live one.
+ARCHIVED_BOTS = {
+    "price_action": (
+        "Archived: a 0.25R take-profit made any winner above +0.25R impossible, "
+        "so 74% of its profit came from 1.6% of its trades."
+    ),
+    "scalper": (
+        "Archived: no entry signal at all - the side merely alternated, so it "
+        "held opposing positions that could only net out to minus the spread. "
+        "Measured -$0.121 per trade."
+    ),
+    "crt": "Archived: negative at every reward ratio tested, -$0.451 per trade.",
+}
+
+
+def _bot_enabled(bot_id: str, settings) -> bool:
+    return {
+        "price_action": lambda: settings.priceActionEnabled,
+        "scalper": lambda: settings.scalperEnabled,
+        "crt": lambda: settings.crtEnabled,
+    }.get(bot_id, lambda: True)()
+
+
 router = APIRouter()
 
 
@@ -131,6 +155,9 @@ async def bots(request: Request) -> FleetSnapshot:
                     lastTradeAt=perf.lastTradeAt,
                     paused=fleet.is_paused(perf.botId),
                     canPause=fleet._engine_for(perf.botId) is not None,
+                    archived=perf.botId in ARCHIVED_BOTS
+                    and not _bot_enabled(perf.botId, fleet.settings),
+                    archivedReason=ARCHIVED_BOTS.get(perf.botId),
                 )
             )
 

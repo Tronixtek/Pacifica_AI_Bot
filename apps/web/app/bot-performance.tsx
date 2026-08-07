@@ -27,6 +27,8 @@ type Bot = {
   lastTradeAt: string | null;
   paused: boolean;
   canPause: boolean;
+  archived?: boolean;
+  archivedReason?: string | null;
 };
 
 type Fleet = {
@@ -151,11 +153,17 @@ export function BotPerformanceBoard() {
               <span className="magic">#{bot.magicNumber}</span>
             </div>
 
-            {bot.paused && (
+            {bot.archived ? (
+              <div className="archived-flag">
+                <strong>ARCHIVED</strong> &mdash; retired, not running.
+                {bot.archivedReason ? ` ${bot.archivedReason}` : ""}
+                {" "}Figures below are history.
+              </div>
+            ) : bot.paused ? (
               <div className="paused-flag">
                 Paused &mdash; no new trades. Open positions still managed.
               </div>
-            )}
+            ) : null}
 
             <div className={`headline ${toneOf(bot.equityImpactUsd)}`}>
               {money(bot.equityImpactUsd)}
@@ -205,7 +213,7 @@ export function BotPerformanceBoard() {
               <span>
                 {bot.symbols.length > 0 ? bot.symbols.join(" · ") : "no trades yet"}
               </span>
-              {bot.canPause && (
+              {bot.canPause && !bot.archived && (
                 <button
                   className={bot.paused ? "btn resume" : "btn pause"}
                   onClick={() => toggle(bot)}
@@ -249,6 +257,7 @@ export function BotPerformanceBoard() {
         .card.pos { border-color: rgba(38,166,110,0.45); }
         .card.neg { border-color: rgba(220,70,70,0.40); }
         .card:has(.paused-flag) { opacity: 0.72; }
+        .card:has(.archived-flag) { opacity: 0.55; filter: grayscale(0.8); }
         .card-top { display: flex; justify-content: space-between; align-items: baseline;
                     gap: 12px; margin-bottom: 10px; }
         h2 { font-size: 15px; font-weight: 600; margin: 0; }
@@ -282,6 +291,11 @@ export function BotPerformanceBoard() {
         .btn.resume { border-color: rgba(38,166,110,0.55); color: #26a66e; }
         .btn.resume:hover { background: rgba(38,166,110,0.12); }
         .btn:disabled { opacity: 0.45; cursor: default; }
+        .archived-flag { font-size: 11px; padding: 8px 10px; margin-bottom: 12px;
+          border-radius: 6px; line-height: 1.5;
+          border: 1px solid rgba(148,163,184,0.45);
+          background: rgba(100,116,139,0.16); color: #94a3b8; }
+        .archived-flag strong { letter-spacing: 0.08em; color: #cbd5e1; }
         .paused-flag { font-size: 11px; padding: 6px 10px; margin-bottom: 12px;
                        border-radius: 7px; background: rgba(220,160,40,0.13);
                        border: 1px solid rgba(220,160,40,0.35); }

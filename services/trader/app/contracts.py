@@ -391,6 +391,12 @@ class BotPerformanceSnapshot(BaseModel):
     lastTradeAt: datetime | None = None
     paused: bool = False
     canPause: bool = True
+    # Retired for good, as distinct from paused. "Paused" reads as temporary,
+    # which is misleading for a strategy that has been archived on measured
+    # evidence - and a card that merely looks paused invites someone to press
+    # resume on a bot that lost money every day it ran.
+    archived: bool = False
+    archivedReason: str | None = None
 
 
 class FleetSnapshot(BaseModel):
