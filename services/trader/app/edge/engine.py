@@ -9,7 +9,7 @@ from app.config import Settings
 from app.edge.markets import MarketConfig, markets_from_settings
 from app.edge.risk import OpenRisk, RiskManager, RiskSettings
 from app.edge.signal import Rejection, Signal, evaluate
-from app.edge.trend import MIN_BARS, atr
+from app.edge.trend import MIN_BARS, atr, read_trend
 from app.mt5.client import Mt5Client, timeframe_seconds
 from app.mt5.models import Bar, MarketSpec
 
@@ -53,6 +53,14 @@ class EdgeEngine:
         self._rejects: collections.Counter = collections.Counter()
         self._signalsSeen = 0
         self._lastHeartbeat: datetime | None = None
+        # What the bot saw on each market's most recent closed bar. Kept so the
+        # dashboard can show WHY it is idle rather than only that it is - the
+        # difference between "waiting for the daily trend to agree" and "dead".
+        self.observations: dict[str, dict[str, Any]] = {}
+        # Signals that fired but were then refused by the risk manager. Worth
+        # separating from rejections: a setup blocked by position limits is a
+        # very different story from one that never qualified.
+        self.refusals: list[dict[str, Any]] = []
         self.risk = RiskManager(
             RiskSettings(
                 targetRiskPct=settings.edgeRiskPct,
@@ -252,6 +260,8 @@ class EdgeEngine:
             stop_buffer_atr=self.settings.edgeStopBufferAtr,
             max_spread_fraction_of_risk=self.settings.edgeMaxSpreadFraction,
         )
+        self._record_observation(symbol, market, bars, higher, outcome)
+
         if isinstance(outcome, Rejection):
             self._rejects[outcome.reason] += 1
             if self._lastReason.get(symbol) != outcome.reason:
@@ -263,6 +273,57 @@ class EdgeEngine:
         self._lastReason.pop(symbol, None)
         self.note(f"{symbol}: SIGNAL {outcome.direction} - {outcome.reason}")
         await self._open(outcome, mine)
+
+    def _record_observation(self, symbol, market, bars, higher, outcome) -> None:
+        """Snapshot what the bot saw, for the dashboard.
+
+        The trends are re-read rather than threaded out of `evaluate`, which
+        keeps the decision path a pure function with one return value. It costs
+        one extra EMA pass per closed bar, which at a 15-minute cadence is
+        nothing.
+        """
+        a = atr(bars)
+        execution = read_trend(bars, atr=a, require_anchor=self.settings.edgeRequireAnchor)
+        higher_view = None
+        if higher:
+            higher_view = read_trend(
+                higher, atr=atr(higher), require_anchor=self.settings.edgeRequireAnchor
+            )
+
+        bar = bars[-1]
+        risk = abs(outcome.entry - outcome.stop) if isinstance(outcome, Signal) else 0.0
+        self.observations[symbol] = {
+            "symbol": symbol,
+            "timeframe": market.timeframe,
+            "higherTimeframe": market.higherTimeframe,
+            "trend": execution.direction,
+            "higherTrend": higher_view.direction if higher_view else None,
+            "price": bar.close,
+            "atr": a,
+            "spreadPrice": bar.spreadPrice,
+            "spreadFractionOfAtr": (bar.spreadPrice / a) if a > 0 else None,
+            "barClosedAt": bar.time,
+            "observedAt": datetime.now(timezone.utc),
+            "status": "signal" if isinstance(outcome, Signal) else "waiting",
+            "reason": outcome.reason,
+            "pattern": outcome.pattern if isinstance(outcome, Signal) else None,
+            "direction": outcome.direction if isinstance(outcome, Signal) else None,
+            "entry": outcome.entry if isinstance(outcome, Signal) else None,
+            "stop": outcome.stop if isinstance(outcome, Signal) else None,
+            "riskAtr": (risk / a) if isinstance(outcome, Signal) and a > 0 else None,
+        }
+
+    def _note_refusal(self, sig: Signal, reason: str) -> None:
+        self.refusals.append({
+            "at": datetime.now(timezone.utc),
+            "symbol": sig.symbol,
+            "direction": sig.direction,
+            "pattern": sig.pattern,
+            "entry": sig.entry,
+            "stop": sig.stop,
+            "reason": reason,
+        })
+        del self.refusals[:-25]
 
     async def _open(self, sig: Signal, mine: list[Any]) -> None:
         spec = self.specs[sig.symbol]
@@ -292,7 +353,8 @@ class EdgeEngine:
             realisedToday=await self._realised_today(),
         )
         if not decision.allowed:
-            self.note(f"{sig.symbol}: {decision.reason}")
+            self._note_refusal(sig, decision.reason)
+            self.note(f"{sig.symbol}: REFUSED - {decision.reason}")
             return
 
         # A far backstop rather than a real target: the trail is the exit, and
@@ -316,10 +378,12 @@ class EdgeEngine:
         }
         result = await self.client.send_market_order(order)
         if result.get("retcode") != TRADE_RETCODE_DONE:
-            self.note(
-                f"{sig.symbol}: order rejected retcode={result.get('retcode')} "
+            broker_reason = (
+                f"broker rejected the order: retcode={result.get('retcode')} "
                 f"{result.get('comment') or result.get('error')}"
             )
+            self._note_refusal(sig, broker_reason)
+            self.note(f"{sig.symbol}: {broker_reason}")
             return
 
         self.note(

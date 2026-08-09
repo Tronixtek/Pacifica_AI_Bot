@@ -399,6 +399,53 @@ class BotPerformanceSnapshot(BaseModel):
     archivedReason: str | None = None
 
 
+class MarketObservation(BaseModel):
+    """What the bot saw on one market's most recent closed bar."""
+
+    symbol: str
+    timeframe: str
+    higherTimeframe: str | None = None
+    trend: str | None = None
+    higherTrend: str | None = None
+    price: float | None = None
+    atr: float | None = None
+    spreadPrice: float | None = None
+    spreadFractionOfAtr: float | None = None
+    barClosedAt: datetime | None = None
+    observedAt: datetime | None = None
+    status: str = "waiting"
+    reason: str | None = None
+    pattern: str | None = None
+    direction: str | None = None
+    entry: float | None = None
+    stop: float | None = None
+    riskAtr: float | None = None
+
+
+class RefusedTrade(BaseModel):
+    """A setup that qualified but was then declined before reaching the broker."""
+
+    at: datetime
+    symbol: str
+    direction: str
+    pattern: str | None = None
+    entry: float | None = None
+    stop: float | None = None
+    reason: str
+
+
+class EdgeActivity(BaseModel):
+    generatedAt: datetime
+    running: bool = False
+    paused: bool = False
+    signalsSeen: int = 0
+    declined: int = 0
+    topReasons: list[tuple[str, int]] = Field(default_factory=list)
+    markets: list[MarketObservation] = Field(default_factory=list)
+    refusals: list[RefusedTrade] = Field(default_factory=list)
+    events: list[str] = Field(default_factory=list)
+
+
 class FleetSnapshot(BaseModel):
     generatedAt: datetime
     accountBalanceUsd: float | None = None

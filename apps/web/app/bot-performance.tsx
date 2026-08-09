@@ -31,6 +31,43 @@ type Bot = {
   archivedReason?: string | null;
 };
 
+type Observation = {
+  symbol: string;
+  timeframe: string;
+  higherTimeframe: string | null;
+  trend: string | null;
+  higherTrend: string | null;
+  price: number | null;
+  atr: number | null;
+  spreadFractionOfAtr: number | null;
+  barClosedAt: string | null;
+  status: string;
+  reason: string | null;
+  pattern: string | null;
+  direction: string | null;
+  riskAtr: number | null;
+};
+
+type Refusal = {
+  at: string;
+  symbol: string;
+  direction: string;
+  pattern: string | null;
+  reason: string;
+};
+
+type Activity = {
+  generatedAt: string;
+  running: boolean;
+  paused: boolean;
+  signalsSeen: number;
+  declined: number;
+  topReasons: [string, number][];
+  markets: Observation[];
+  refusals: Refusal[];
+  events: string[];
+};
+
 type Fleet = {
   generatedAt: string;
   accountBalanceUsd: number | null;
@@ -54,6 +91,7 @@ export function BotPerformanceBoard() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [activity, setActivity] = useState<Activity | null>(null);
 
   const toggle = async (bot: Bot) => {
     setBusy(bot.botId);
@@ -93,6 +131,14 @@ export function BotPerformanceBoard() {
         if (alive) {
           setFleet(data);
           setError(null);
+        }
+        // Fetched separately so a failure here cannot blank the performance
+        // numbers, which are the thing that must always render.
+        try {
+          const ar = await fetch(`${API}/api/bots/edge/activity`, { cache: "no-store" });
+          if (ar.ok && alive) setActivity(await ar.json());
+        } catch {
+          /* diagnostic only - losing it is not worth an error banner */
         }
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
@@ -231,6 +277,103 @@ export function BotPerformanceBoard() {
         ))}
       </div>
 
+
+      {activity && activity.markets.length > 0 && (
+        <section className="live">
+          <div className="live-head">
+            <h2>What the bot is seeing</h2>
+            <span className="live-meta">
+              {activity.signalsSeen} signal{activity.signalsSeen === 1 ? "" : "s"}
+              {" / "}
+              {activity.declined} declined
+              {activity.paused ? " / PAUSED" : ""}
+            </span>
+          </div>
+
+          <div className="obs">
+            {activity.markets.map((m) => (
+              <div key={m.symbol} className={`ob ${m.status === "signal" ? "hot" : ""}`}>
+                <div className="ob-top">
+                  <strong>{m.symbol}</strong>
+                  <span className="tf">
+                    {m.timeframe}
+                    {m.higherTimeframe ? ` under ${m.higherTimeframe}` : ""}
+                  </span>
+                </div>
+
+                <div className="trends">
+                  <span className={`pill ${m.trend ?? "none"}`}>
+                    {m.timeframe} {m.trend ?? "no trend"}
+                  </span>
+                  {m.higherTimeframe && (
+                    <span className={`pill ${m.higherTrend ?? "none"}`}>
+                      {m.higherTimeframe} {m.higherTrend ?? "no trend"}
+                    </span>
+                  )}
+                  {m.trend && m.higherTrend && m.trend !== m.higherTrend && (
+                    <span className="pill blocked">vetoed</span>
+                  )}
+                </div>
+
+                <p className="reason">{m.reason}</p>
+
+                <div className="ob-facts">
+                  {m.price != null && <span>price {m.price}</span>}
+                  {m.atr != null && <span>ATR {m.atr.toFixed(2)}</span>}
+                  {m.spreadFractionOfAtr != null && (
+                    <span
+                      className={m.spreadFractionOfAtr > 0.25 ? "warn" : ""}
+                      title="Spread as a fraction of ATR. This ratio decided every result measured."
+                    >
+                      spread {(m.spreadFractionOfAtr * 100).toFixed(1)}% of ATR
+                    </span>
+                  )}
+                  {m.barClosedAt && (
+                    <span>bar {new Date(m.barClosedAt).toISOString().slice(11, 16)} UTC</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {activity.topReasons.length > 0 && (
+            <div className="reasons">
+              <span className="reasons-label">Why it is waiting</span>
+              {activity.topReasons.map(([reason, n]) => (
+                <div key={reason} className="reason-row">
+                  <span className="count">{n}</span>
+                  <span>{reason}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activity.refusals.length > 0 && (
+            <div className="reasons">
+              <span className="reasons-label">Qualified but declined</span>
+              {activity.refusals.slice(0, 6).map((r, i) => (
+                <div key={i} className="reason-row">
+                  <span className="count">
+                    {new Date(r.at).toISOString().slice(11, 16)}
+                  </span>
+                  <span>
+                    <strong>{r.symbol} {r.direction}</strong>
+                    {r.pattern ? ` (${r.pattern})` : ""} - {r.reason}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activity.events.length > 0 && (
+            <details className="log">
+              <summary>Activity log ({activity.events.length})</summary>
+              <pre>{activity.events.join("\n")}</pre>
+            </details>
+          )}
+        </section>
+      )}
+
       {fleet && fleet.bots.length > 0 && (
         <div className="total">
           <span>Combined</span>
@@ -239,6 +382,41 @@ export function BotPerformanceBoard() {
       )}
 
       <style>{`
+
+        .live { margin-top: 32px; border: 1px solid rgba(148,163,184,0.22);
+          border-radius: 12px; padding: 18px 20px 20px; }
+        .live-head { display: flex; justify-content: space-between; align-items: baseline;
+          gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+        .live h2 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+        .live-meta { font-size: 12px; opacity: 0.6; font-variant-numeric: tabular-nums; }
+        .obs { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+        .ob { border: 1px solid rgba(148,163,184,0.18); border-radius: 9px; padding: 12px 14px; }
+        .ob.hot { border-color: rgba(52,211,153,0.55); background: rgba(52,211,153,0.07); }
+        .ob-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+        .ob-top strong { font-size: 14px; }
+        .tf { font-size: 11px; opacity: 0.55; }
+        .trends { display: flex; gap: 6px; flex-wrap: wrap; margin: 9px 0; }
+        .pill { font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+          padding: 3px 7px; border-radius: 5px; border: 1px solid transparent; }
+        .pill.up { color: #6ee7b7; border-color: rgba(110,231,183,0.35); background: rgba(110,231,183,0.10); }
+        .pill.down { color: #fca5a5; border-color: rgba(252,165,165,0.35); background: rgba(252,165,165,0.10); }
+        .pill.none { color: #94a3b8; border-color: rgba(148,163,184,0.3); }
+        .pill.blocked { color: #fcd34d; border-color: rgba(252,211,77,0.4); background: rgba(252,211,77,0.10); }
+        .reason { font-size: 12px; line-height: 1.5; margin: 0 0 9px; opacity: 0.78; }
+        .ob-facts { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px;
+          opacity: 0.5; font-variant-numeric: tabular-nums; }
+        .ob-facts .warn { color: #fcd34d; opacity: 1; }
+        .reasons { margin-top: 16px; }
+        .reasons-label { display: block; font-size: 11px; text-transform: uppercase;
+          letter-spacing: 0.07em; opacity: 0.45; margin-bottom: 7px; }
+        .reason-row { display: flex; gap: 10px; font-size: 12px; padding: 3px 0;
+          line-height: 1.5; opacity: 0.8; }
+        .reason-row .count { min-width: 46px; text-align: right; opacity: 0.55;
+          font-variant-numeric: tabular-nums; }
+        .log { margin-top: 16px; font-size: 12px; }
+        .log summary { cursor: pointer; opacity: 0.55; }
+        .log pre { margin: 9px 0 0; padding: 11px; border-radius: 7px; overflow-x: auto;
+          background: rgba(148,163,184,0.08); font-size: 11px; line-height: 1.65; }
         .board { max-width: 1100px; margin: 0 auto; padding: 40px 24px 64px; }
         .head { display: flex; justify-content: space-between; align-items: flex-start;
                 gap: 24px; flex-wrap: wrap; margin-bottom: 28px; }

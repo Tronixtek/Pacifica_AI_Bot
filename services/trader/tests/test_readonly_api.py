@@ -72,3 +72,48 @@ def test_nothing_is_blocked_when_disabled():
 def test_the_refusal_says_how_to_undo_it():
     detail = _app(True).post("/api/operator/pause").json()["detail"]
     assert "API_READ_ONLY=false" in detail
+
+
+# --- archived bots are omitted, not dimmed ---------------------------------
+
+def test_archived_bots_are_absent_from_the_fleet_snapshot():
+    """A retired strategy on a live dashboard invites a misreading.
+
+    price_action was reported as still running purely because its card was
+    present, even though it was paused and had not traded for hours. Its
+    history lives in MT5 and in the archive tag; it does not need a card.
+    """
+    import warnings
+    warnings.filterwarnings("ignore")
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    with TestClient(app) as c:
+        ids = [b["botId"] for b in c.get("/api/bots").json()["bots"]]
+    assert "price_action" not in ids
+    assert "scalper" not in ids
+    assert "crt" not in ids
+
+
+def test_activity_endpoint_reports_what_the_bot_is_waiting_for():
+    import warnings
+    warnings.filterwarnings("ignore")
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    with TestClient(app) as c:
+        r = c.get("/api/bots/edge/activity")
+        assert r.status_code == 200
+        d = r.json()
+    for key in ("running", "signalsSeen", "declined", "topReasons",
+                "markets", "refusals", "events"):
+        assert key in d
+
+
+def test_activity_is_a_read_and_survives_read_only_mode():
+    """The whole point is being able to see why it is idle from a phone,
+    which is exactly the situation read-only mode exists for."""
+    from app.core.readonly import MUTATING_PREFIXES, SAFE_METHODS
+
+    assert "GET" in SAFE_METHODS
+    assert not any("/api/bots/edge/activity".startswith(p) for p in MUTATING_PREFIXES)

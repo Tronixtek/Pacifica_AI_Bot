@@ -7,6 +7,9 @@ from fastapi import APIRouter, Request
 from app.contracts import (
     BotControlResponse,
     BotPerformanceSnapshot,
+    EdgeActivity,
+    MarketObservation,
+    RefusedTrade,
     FleetSnapshot,
     DashboardSnapshot,
     DiagnosticsResponse,
@@ -134,6 +137,12 @@ async def bots(request: Request) -> FleetSnapshot:
     rows: list[BotPerformanceSnapshot] = []
     if fleet is not None:
         for perf in await fleet.performance():
+            # Archived strategies are omitted rather than dimmed. Their
+            # history stays in MT5 and in the git tag; a retired bot on a
+            # live dashboard is noise that invites a misreading, which is
+            # exactly what happened with price_action.
+            if perf.botId in ARCHIVED_BOTS and not _bot_enabled(perf.botId, fleet.settings):
+                continue
             rows.append(
                 BotPerformanceSnapshot(
                     botId=perf.botId,
@@ -155,9 +164,8 @@ async def bots(request: Request) -> FleetSnapshot:
                     lastTradeAt=perf.lastTradeAt,
                     paused=fleet.is_paused(perf.botId),
                     canPause=fleet._engine_for(perf.botId) is not None,
-                    archived=perf.botId in ARCHIVED_BOTS
-                    and not _bot_enabled(perf.botId, fleet.settings),
-                    archivedReason=ARCHIVED_BOTS.get(perf.botId),
+                    archived=False,
+                    archivedReason=None,
                 )
             )
 
@@ -168,6 +176,33 @@ async def bots(request: Request) -> FleetSnapshot:
         currency=account.currency if account else None,
         openPositions=sum(r.openPositions for r in rows),
         bots=rows,
+    )
+
+
+@router.get("/api/bots/edge/activity", response_model=EdgeActivity)
+async def edge_activity(request: Request) -> EdgeActivity:
+    """What the edge bot is currently seeing, and what it has declined.
+
+    Exists because two days of silence and a crash look identical from the
+    outside. This turns "no trades" into a readable statement about which gate
+    is closed and why.
+    """
+    fleet = get_fleet(request)
+    engine = getattr(fleet, "edge", None) if fleet else None
+    now = datetime.now(timezone.utc)
+    if engine is None:
+        return EdgeActivity(generatedAt=now, running=False)
+
+    return EdgeActivity(
+        generatedAt=now,
+        running=bool(engine.running),
+        paused=bool(engine.paused),
+        signalsSeen=engine._signalsSeen,
+        declined=sum(engine._rejects.values()),
+        topReasons=[(r, n) for r, n in engine._rejects.most_common(4)],
+        markets=[MarketObservation(**o) for o in engine.observations.values()],
+        refusals=[RefusedTrade(**f) for f in reversed(engine.refusals)],
+        events=list(reversed(engine.events[-40:])),
     )
 
 
