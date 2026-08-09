@@ -350,6 +350,9 @@ class Settings(BaseSettings):
     edgeHardStopDrawdownPct: float = 25.0
 
     edgePollSec: float = 20.0
+    # How often to log a proof-of-life line. A correctly idle bot and a wedged
+    # one otherwise produce identical output: nothing at all.
+    edgeHeartbeatSec: float = 1_800.0
     edgeMagicNumber: int = 990_214
     # Index CFDs gap over the weekend and a stop does not protect against a
     # gap - the fill happens at a price that never traded in between.

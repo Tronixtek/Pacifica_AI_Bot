@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -45,6 +46,13 @@ class EdgeEngine:
         self.startingEquity: float | None = None
         self._lastBarTime: dict[str, datetime] = {}
         self._valuePerPoint: dict[str, float] = {}
+        # Why each symbol last declined. Logged on CHANGE rather than every
+        # bar, so the log stays readable while still explaining silence - a
+        # bot idle because nothing qualified must not look like one that died.
+        self._lastReason: dict[str, str] = {}
+        self._rejects: collections.Counter = collections.Counter()
+        self._signalsSeen = 0
+        self._lastHeartbeat: datetime | None = None
         self.risk = RiskManager(
             RiskSettings(
                 targetRiskPct=settings.edgeRiskPct,
@@ -168,6 +176,28 @@ class EdgeEngine:
             # often that the terminal is hammered for no reason.
             await asyncio.sleep(min(self.settings.edgePollSec, max(5, interval / 10)))
 
+    def _heartbeat(self, now: datetime | None = None) -> None:
+        """Periodic proof of life, with what the bot is waiting for.
+
+        Without this, a correctly idle bot and a wedged one produce the same
+        output: nothing. The summary names the dominant rejection so a long
+        quiet stretch can be read at a glance rather than reconstructed.
+        """
+        now = now or datetime.now(timezone.utc)
+        every = max(300.0, self.settings.edgeHeartbeatSec)
+        if self._lastHeartbeat is not None and (now - self._lastHeartbeat).total_seconds() < every:
+            return
+        first = self._lastHeartbeat is None
+        self._lastHeartbeat = now
+        if first:
+            return
+        top = self._rejects.most_common(1)
+        waiting = f' mostly "{top[0][0]}"' if top else ""
+        self.note(
+            f"alive: {self._signalsSeen} signal(s), "
+            f"{sum(self._rejects.values())} declined since start,{waiting}"
+        )
+
     async def stop(self) -> None:
         self.running = False
 
@@ -175,6 +205,7 @@ class EdgeEngine:
         # Trailing runs even when paused: pausing stops NEW positions, it does
         # not mean abandoning management of live risk.
         await self._trail_open_positions()
+        self._heartbeat()
 
         if self.paused or not self.symbols:
             return
@@ -222,8 +253,15 @@ class EdgeEngine:
             max_spread_fraction_of_risk=self.settings.edgeMaxSpreadFraction,
         )
         if isinstance(outcome, Rejection):
+            self._rejects[outcome.reason] += 1
+            if self._lastReason.get(symbol) != outcome.reason:
+                self._lastReason[symbol] = outcome.reason
+                self.note(f"{symbol}: {outcome.reason}")
             return
 
+        self._signalsSeen += 1
+        self._lastReason.pop(symbol, None)
+        self.note(f"{symbol}: SIGNAL {outcome.direction} - {outcome.reason}")
         await self._open(outcome, mine)
 
     async def _open(self, sig: Signal, mine: list[Any]) -> None:

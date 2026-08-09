@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -296,3 +296,55 @@ async def test_weekend_flat_leaves_crypto_positions_alone():
     await e._flatten_for_weekend()
     closed = [o["symbol"] for o in e.client.orders]
     assert closed == ["XAUUSDm"]
+
+
+# --- the bot must explain its silence --------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_rejection_is_logged_once_not_every_bar():
+    """Silence needs a reason, but not the same reason a thousand times."""
+    from app.edge.signal import Rejection
+
+    e = engine()
+    e.symbols = ["XAUUSDm"]
+    for _ in range(5):
+        out = Rejection("XAUUSDm", "Higher timeframe is down.")
+        e._rejects[out.reason] += 1
+        if e._lastReason.get("XAUUSDm") != out.reason:
+            e._lastReason["XAUUSDm"] = out.reason
+            e.note(f"XAUUSDm: {out.reason}")
+    logged = [x for x in e.events if "Higher timeframe is down" in x]
+    assert len(logged) == 1
+    assert e._rejects["Higher timeframe is down."] == 5
+
+
+def test_a_changed_reason_is_logged_again():
+    e = engine()
+    for reason in ("Higher timeframe is down.", "No trend on the execution timeframe."):
+        if e._lastReason.get("BTCUSDm") != reason:
+            e._lastReason["BTCUSDm"] = reason
+            e.note(f"BTCUSDm: {reason}")
+    assert len([x for x in e.events if "BTCUSDm:" in x]) == 2
+
+
+def test_heartbeat_is_rate_limited():
+    e = engine(edgeHeartbeatSec=1800)
+    t0 = datetime(2026, 8, 9, 9, 0, tzinfo=timezone.utc)
+    e._heartbeat(t0)                                   # first call only arms it
+    assert not any("alive:" in x for x in e.events)
+    e._heartbeat(t0 + timedelta(minutes=5))            # too soon
+    assert not any("alive:" in x for x in e.events)
+    e._heartbeat(t0 + timedelta(minutes=31))
+    assert sum("alive:" in x for x in e.events) == 1
+
+
+def test_heartbeat_names_what_it_is_waiting_for():
+    e = engine(edgeHeartbeatSec=600)
+    e._rejects["Higher timeframe is down."] = 40
+    e._rejects["No trend on the execution timeframe."] = 3
+    t0 = datetime(2026, 8, 9, 9, 0, tzinfo=timezone.utc)
+    e._heartbeat(t0)
+    e._heartbeat(t0 + timedelta(minutes=11))
+    alive = [x for x in e.events if "alive:" in x][0]
+    assert "43 declined" in alive
+    assert "Higher timeframe is down" in alive
