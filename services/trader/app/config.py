@@ -349,7 +349,12 @@ class Settings(BaseSettings):
     edgeDailyLossHaltPct: float = 6.0
     edgeHardStopDrawdownPct: float = 25.0
 
-    edgePollSec: float = 20.0
+    # Observation cadence. The dashboard reads whatever the last poll saw,
+    # so this is also how live the panel feels.
+    edgePollSec: float = 10.0
+    # Veto-timeframe bars are refetched at most this often. A daily bar changes
+    # once a day; refetching 520 of them every poll is IPC for no information.
+    edgeHigherCacheSec: float = 300.0
     # How often to log a proof-of-life line. A correctly idle bot and a wedged
     # one otherwise produce identical output: nothing at all.
     edgeHeartbeatSec: float = 1_800.0

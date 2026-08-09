@@ -413,6 +413,10 @@ class MarketObservation(BaseModel):
     spreadFractionOfAtr: float | None = None
     barClosedAt: datetime | None = None
     observedAt: datetime | None = None
+    bid: float | None = None
+    ask: float | None = None
+    liveSpread: float | None = None
+    liveSpreadFractionOfAtr: float | None = None
     status: str = "waiting"
     reason: str | None = None
     pattern: str | None = None

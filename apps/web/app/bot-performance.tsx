@@ -41,6 +41,11 @@ type Observation = {
   atr: number | null;
   spreadFractionOfAtr: number | null;
   barClosedAt: string | null;
+  observedAt: string | null;
+  bid: number | null;
+  ask: number | null;
+  liveSpread: number | null;
+  liveSpreadFractionOfAtr: number | null;
   status: string;
   reason: string | null;
   pattern: string | null;
@@ -79,6 +84,14 @@ type Fleet = {
 
 const money = (v: number) =>
   `${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`;
+
+function agoOf(iso: string | null) {
+  if (!iso) return null;
+  const secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  return `${Math.round(secs / 3600)}h ago`;
+}
 
 function toneOf(v: number) {
   if (v > 0) return "pos";
@@ -278,7 +291,7 @@ export function BotPerformanceBoard() {
       </div>
 
 
-      {activity && activity.markets.length > 0 && (
+      {activity && (
         <section className="live">
           <div className="live-head">
             <h2>What the bot is seeing</h2>
@@ -287,8 +300,18 @@ export function BotPerformanceBoard() {
               {" / "}
               {activity.declined} declined
               {activity.paused ? " / PAUSED" : ""}
+              {" / updated "}
+              {agoOf(activity.generatedAt) ?? "-"}
             </span>
           </div>
+
+          {activity.markets.length === 0 && (
+            <p className="reason">
+              {activity.running
+                ? "Starting up - the first observation lands within a poll."
+                : "The edge bot is not running."}
+            </p>
+          )}
 
           <div className="obs">
             {activity.markets.map((m) => (
@@ -318,7 +341,13 @@ export function BotPerformanceBoard() {
                 <p className="reason">{m.reason}</p>
 
                 <div className="ob-facts">
-                  {m.price != null && <span>price {m.price}</span>}
+                  {m.bid != null && m.ask != null ? (
+                    <span className="quote">
+                      {m.bid} / {m.ask}
+                    </span>
+                  ) : (
+                    m.price != null && <span>price {m.price}</span>
+                  )}
                   {m.atr != null && <span>ATR {m.atr.toFixed(2)}</span>}
                   {m.spreadFractionOfAtr != null && (
                     <span
@@ -330,6 +359,16 @@ export function BotPerformanceBoard() {
                   )}
                   {m.barClosedAt && (
                     <span>bar {new Date(m.barClosedAt).toISOString().slice(11, 16)} UTC</span>
+                  )}
+                  {m.observedAt && (
+                    <span
+                      className={
+                        Date.now() - new Date(m.observedAt).getTime() > 120000 ? "warn" : "fresh"
+                      }
+                      title="How long ago the bot last looked at this market. If this stops moving, the loop has stopped."
+                    >
+                      seen {agoOf(m.observedAt)}
+                    </span>
                   )}
                 </div>
               </div>
@@ -406,6 +445,8 @@ export function BotPerformanceBoard() {
         .ob-facts { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px;
           opacity: 0.5; font-variant-numeric: tabular-nums; }
         .ob-facts .warn { color: #fcd34d; opacity: 1; }
+        .ob-facts .fresh { color: #6ee7b7; opacity: 0.85; }
+        .ob-facts .quote { font-weight: 600; opacity: 0.85; }
         .reasons { margin-top: 16px; }
         .reasons-label { display: block; font-size: 11px; text-transform: uppercase;
           letter-spacing: 0.07em; opacity: 0.45; margin-bottom: 7px; }

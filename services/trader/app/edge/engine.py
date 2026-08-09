@@ -50,6 +50,7 @@ class EdgeEngine:
         # bar, so the log stays readable while still explaining silence - a
         # bot idle because nothing qualified must not look like one that died.
         self._lastReason: dict[str, str] = {}
+        self._higherCache: dict[str, tuple[datetime, list[Bar]]] = {}
         self._rejects: collections.Counter = collections.Counter()
         self._signalsSeen = 0
         self._lastHeartbeat: datetime | None = None
@@ -236,23 +237,29 @@ class EdgeEngine:
 
     # --- the decision ----------------------------------------------------
 
+    async def _higher_bars(self, symbol: str, market) -> list[Bar] | None:
+        """Veto-timeframe bars, cached.
+
+        A daily bar changes once a day and a 4h bar four times, so refetching
+        520 of them every poll is pure IPC for no new information.
+        """
+        if not market.higherTimeframe:
+            return None
+        now = datetime.now(timezone.utc)
+        cached = self._higherCache.get(symbol)
+        if cached and (now - cached[0]).total_seconds() < self.settings.edgeHigherCacheSec:
+            return cached[1]
+        bars = await self._bars(symbol, market.higherTimeframe, BARS_NEEDED)
+        self._higherCache[symbol] = (now, bars)
+        return bars
+
     async def _consider(self, symbol: str, mine: list[Any]) -> None:
         market = self.markets[symbol]
         bars = await self._bars(symbol, market.timeframe, BARS_NEEDED)
         if len(bars) < MIN_BARS:
             return
 
-        # Evaluate once per closed bar. Without this the same setup is acted on
-        # every poll for the whole bar, which is how one signal becomes twenty
-        # positions.
-        last_time = bars[-1].time
-        if self._lastBarTime.get(symbol) == last_time:
-            return
-        self._lastBarTime[symbol] = last_time
-
-        higher: list[Bar] | None = None
-        if market.higherTimeframe:
-            higher = await self._bars(symbol, market.higherTimeframe, BARS_NEEDED)
+        higher = await self._higher_bars(symbol, market)
 
         outcome = evaluate(
             symbol, bars, higher,
@@ -260,7 +267,18 @@ class EdgeEngine:
             stop_buffer_atr=self.settings.edgeStopBufferAtr,
             max_spread_fraction_of_risk=self.settings.edgeMaxSpreadFraction,
         )
-        self._record_observation(symbol, market, bars, higher, outcome)
+
+        # Observe on EVERY poll. This is what makes the dashboard live, and it
+        # is also the only thing that distinguishes a bot waiting patiently
+        # from one that has stopped looping.
+        await self._record_observation(symbol, market, bars, higher, outcome)
+
+        # Act only once per closed bar. Without this guard the same setup is
+        # taken again on every poll for the whole bar, which is how one signal
+        # becomes twenty positions.
+        if self._lastBarTime.get(symbol) == bars[-1].time:
+            return
+        self._lastBarTime[symbol] = bars[-1].time
 
         if isinstance(outcome, Rejection):
             self._rejects[outcome.reason] += 1
@@ -274,7 +292,7 @@ class EdgeEngine:
         self.note(f"{symbol}: SIGNAL {outcome.direction} - {outcome.reason}")
         await self._open(outcome, mine)
 
-    def _record_observation(self, symbol, market, bars, higher, outcome) -> None:
+    async def _record_observation(self, symbol, market, bars, higher, outcome) -> None:
         """Snapshot what the bot saw, for the dashboard.
 
         The trends are re-read rather than threaded out of `evaluate`, which
@@ -292,6 +310,20 @@ class EdgeEngine:
 
         bar = bars[-1]
         risk = abs(outcome.entry - outcome.stop) if isinstance(outcome, Signal) else 0.0
+
+        # The live quote, so the panel moves between bar closes. Failure here
+        # must not lose the observation - a stale price is far better than a
+        # blank card that reads as "dead".
+        live_bid = live_ask = live_spread = None
+        try:
+            quote = await self.client.symbol_info_tick(symbol)
+            if quote is not None:
+                live_bid = quote.bidPrice
+                live_ask = quote.askPrice
+                if live_bid is not None and live_ask is not None:
+                    live_spread = live_ask - live_bid
+        except Exception:
+            pass
         self.observations[symbol] = {
             "symbol": symbol,
             "timeframe": market.timeframe,
@@ -304,6 +336,10 @@ class EdgeEngine:
             "spreadFractionOfAtr": (bar.spreadPrice / a) if a > 0 else None,
             "barClosedAt": bar.time,
             "observedAt": datetime.now(timezone.utc),
+            "bid": live_bid,
+            "ask": live_ask,
+            "liveSpread": live_spread,
+            "liveSpreadFractionOfAtr": (live_spread / a) if (live_spread and a > 0) else None,
             "status": "signal" if isinstance(outcome, Signal) else "waiting",
             "reason": outcome.reason,
             "pattern": outcome.pattern if isinstance(outcome, Signal) else None,
